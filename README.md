@@ -24,27 +24,12 @@ Stage behavior in practice:
 
 ```text
 testing-agent-gateway/
-|- .azure/
-|  `- pipeline-app.yaml
 |- agent-runtime/
 |  |- README.md
 |  `- agent-personality.md
 |- docs/
 |  |- flow.png
 |  `- flow.svg
-|- implementation-plan/
-|  |- 00-agent-instructions.md
-|  |- 01-scope-and-decisions.md
-|  |- 02-jira-custom-fields-and-automation.md
-|  |- 03-end-to-end-workflow.md
-|  |- 04-dotnet-solution-design.md
-|  |- 05-api-contracts-and-payloads.md
-|  |- 06-generation-pipeline-and-prompts.md
-|  |- 07-implementation-backlog.md
-|  `- iteration1-agent-blueprint-complete.md
-|- infra/
-|  |- pipelines/
-|  `- terraform/
 |- src/
 |  |- Manso.Api/
 |  |- Manso.Application/
