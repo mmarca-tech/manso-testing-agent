@@ -61,6 +61,57 @@ public sealed class DocumentationResolverTests
         Assert.Equal("22222", result.Documents[0].PageId);
     }
 
+    [Fact]
+    public async Task ResolveAsync_UsesIssueDescriptionLinks_FromFetchedJiraContext()
+    {
+        var resolver = new DocumentationResolver(
+            new StubConfluenceApiClient(),
+            new DocumentationRetrievalOptions
+            {
+                IncludeCommentLinks = false,
+                MaxPages = 5,
+                MaxChunksPerPage = 3,
+            },
+            NullLogger<DocumentationResolver>.Instance);
+
+        var issue = CreateIssue() with
+        {
+            Description = "See https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/33333/Retry+Rules",
+            Comments = Array.Empty<JiraCommentContext>(),
+        };
+
+        var result = await resolver.ResolveAsync(issue, CreateRequest(Array.Empty<string>()), CancellationToken.None);
+
+        Assert.Single(result.Documents);
+        Assert.Equal("33333", result.Documents[0].PageId);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ExcludesReleaseDocumentation()
+    {
+        var resolver = new DocumentationResolver(
+            new StubConfluenceApiClient(),
+            new DocumentationRetrievalOptions
+            {
+                MaxPages = 5,
+                MaxChunksPerPage = 3,
+            },
+            NullLogger<DocumentationResolver>.Instance);
+
+        var result = await resolver.ResolveAsync(
+            CreateIssue(),
+            CreateRequest(
+                [
+                    "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
+                    "https://yourcompany.atlassian.net/wiki/spaces/REL/pages/99999/Release+Notes",
+                ]),
+            CancellationToken.None);
+
+        Assert.Single(result.Documents);
+        Assert.DoesNotContain(result.Documents, document => document.PageId == "99999");
+        Assert.Contains(result.Warnings, warning => warning.Code == "documentation_link_excluded_release_information");
+    }
+
     private static JiraIssueContext CreateIssue()
         => new(
             "QA-1234",
@@ -74,6 +125,7 @@ public sealed class DocumentationResolverTests
                 "Alice",
                 "See https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/22222/Retry+Decision+Log",
                 DateTimeOffset.UtcNow)],
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             Array.Empty<JiraDevelopmentRepository>());
@@ -81,12 +133,10 @@ public sealed class DocumentationResolverTests
     private static NormalizedRunRequest CreateRequest(IReadOnlyList<string>? links = null)
         => new(
             "QA-1234",
-            "https://yourcompany.atlassian.net/browse/QA-1234",
             GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
             "bank-otp-api",
-            null,
             links ?? new[]
             {
                 "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
@@ -115,7 +165,7 @@ public sealed class DocumentationResolverTests
             return Task.FromResult(new ConfluenceDocument(
                 sourceUrl,
                 pageId,
-                $"Page {pageId}",
+                pageId == "99999" ? "Release Notes" : $"Page {pageId}",
                 "ENG",
                 1,
                 DateTimeOffset.UtcNow,

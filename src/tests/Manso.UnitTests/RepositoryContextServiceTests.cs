@@ -26,7 +26,8 @@ public sealed class RepositoryContextServiceTests
 
         Assert.Single(result.ChangedFiles);
         Assert.Equal("/src/RetryHandler.cs", result.ChangedFiles[0].Path);
-        Assert.Equal("xUnit", result.Conventions.TestFramework);
+        Assert.Equal("bank-otp-api", result.Conventions.AdapterAlias);
+        Assert.Contains("/tests", result.Conventions.TestDirectoryRoots);
     }
 
     [Fact]
@@ -67,12 +68,10 @@ public sealed class RepositoryContextServiceTests
     private static NormalizedRunRequest CreateRequest()
         => new(
             "QA-1234",
-            "https://yourcompany.atlassian.net/browse/QA-1234",
             GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
             "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
             Array.Empty<string>(),
             CoverageIntent.Regression,
             OutputTarget.JiraComment,
@@ -80,44 +79,20 @@ public sealed class RepositoryContextServiceTests
             DocumentationMode.ExplicitOnly);
 
     private static IRepositoryAdapterCatalog CreateCatalog()
-        => new RepositoryAdapterCatalog(Microsoft.Extensions.Options.Options.Create(new RepoAdapterOptions
-        {
-            Repositories = new Dictionary<string, RepoDefinition>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["bank-otp-api"] = new()
-                {
-                    Provider = "AzureDevOps",
-                    Organization = "afs-dev",
-                    Project = "rps",
-                    RepositoryName = "bank-otp-api",
-                    RepositoryUrl = "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
-                    DefaultBranch = "main",
-                    SupportsExecutableTestGeneration = false,
-                    TestFramework = "xUnit",
-                    TargetFramework = ".NET 10",
-                    TestDirectoryRoots = ["/tests", "/src/Tests"],
-                    AllowedHelperDirectoryRoots = ["/tests/helpers"],
-                    ProtectedPathPrefixes = ["/src"],
-                    BuildCommands = ["dotnet build src/Manso.sln"],
-                    TestCommands = ["dotnet test src/Manso.sln"],
-                    FormatterCommands = ["dotnet format src/Manso.sln --verify-no-changes"],
-                    TestFileSuffix = "Tests.cs",
-                },
-            },
-        }));
+        => new RepositoryAdapterCatalog();
 
     private static RepositoryConventions CreateConventions()
         => new(
             "bank-otp-api",
             false,
-            "xUnit",
-            ".NET 10",
-            ["/tests", "/src/Tests"],
-            ["/tests/helpers"],
-            ["/src"],
-            ["dotnet build src/Manso.sln"],
-            ["dotnet test src/Manso.sln"],
-            ["dotnet format src/Manso.sln --verify-no-changes"],
+            string.Empty,
+            string.Empty,
+            ["/tests", "/test", "/src/tests", "/src/test"],
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
             "Tests.cs");
 
     private sealed class StubScmClient : IScmClient

@@ -221,6 +221,47 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         Assert.Contains("\"Action\":\"Updated\"", syncArtifactJson);
     }
 
+    [Fact]
+    public async Task PostRuns_StoresPromptArtifacts_AndSkipsGeneration_WhenDryRunIsEnabled()
+    {
+        var request = CreateRequest(dryRun: true);
+
+        var response = await _client.PostAsJsonAsync("/api/runs", request);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        var accepted = await response.Content.ReadFromJsonAsync<RunAcceptedResponse>(JsonOptions);
+        Assert.NotNull(accepted);
+
+        var run = await WaitForCompletionAsync(accepted.RunId);
+        Assert.Equal(RunStatus.Succeeded, run.Status);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ContextBundleBuilt && stage.Status == RunStageStatus.Succeeded);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ScenariosGenerated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Skipped);
+
+        var artifactsResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts");
+        artifactsResponse.EnsureSuccessStatusCode();
+
+        var artifacts = await artifactsResponse.Content.ReadFromJsonAsync<RunArtifactsResponse>(JsonOptions);
+        Assert.NotNull(artifacts);
+        Assert.Contains(artifacts.Artifacts, artifact => artifact.Type == "GenerationContextBundleJson");
+        Assert.Contains(artifacts.Artifacts, artifact => artifact.Type == "LlmPromptJson");
+        Assert.DoesNotContain(artifacts.Artifacts, artifact => artifact.Type == "ScenarioJson");
+
+        var contextResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts/generation-context-bundle.json");
+        contextResponse.EnsureSuccessStatusCode();
+        var contextJson = await contextResponse.Content.ReadAsStringAsync();
+        Assert.Contains("\"metadata\"", contextJson);
+        Assert.Contains("\"sections\"", contextJson);
+
+        var promptResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts/llm-prompt.json");
+        promptResponse.EnsureSuccessStatusCode();
+        var promptJson = await promptResponse.Content.ReadAsStringAsync();
+        Assert.Contains("\"systemPrompt\"", promptJson);
+        Assert.Contains("\"userPrompt\"", promptJson);
+    }
+
     private async Task<RunDetailsResponse> WaitForCompletionAsync(string runId)
     {
         for (var attempt = 0; attempt < 50; attempt++)
@@ -245,33 +286,21 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
     private static RawRunRequest CreateRequest(
         string generationMode = "ExecutableTests",
         string issueKey = "QA-1234",
-        string workflowPass = "ScenarioDesign")
+        string workflowPass = "ScenarioDesign",
+        bool dryRun = false)
         => new(
             "JiraAutomation",
             "Manual",
             new RawIssuePayload(
                 issueKey,
-                "10001",
-                "QA",
-                "Story",
-                "Add retry handling to payment callback",
-                """
-                Full issue description
-                https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
-                """,
-                $"https://yourcompany.atlassian.net/browse/{issueKey}"),
+                "10001"),
             new RawTriggerInputs(
                 generationMode,
                 workflowPass,
-                "Api",
-                "bank-otp-api",
-                null,
                 "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract",
                 "Regression",
-                "Both"),
-            new RawIssueFields(
-                "bank-otp-api",
-                "https://yourcompany.atlassian.net/wiki/spaces/QA/pages/11111/Test+Strategy"),
+                "Both",
+                dryRun),
             new RawRequester(
                 "abc-123",
                 "Manuel Marcatili",

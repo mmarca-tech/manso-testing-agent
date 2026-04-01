@@ -157,6 +157,54 @@ public sealed class AzureDevOpsScmClientTests
     }
 
     [Fact]
+    public async Task GetCodeContextAsync_RedactsSensitiveValues_FromSettingsDiffs()
+    {
+        var client = new AzureDevOpsScmClient(
+            new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler())),
+            Options.Create(new ScmOptions
+            {
+                Provider = "AzureDevOps",
+                BaseUrl = "https://dev.azure.com/",
+                ReadToken = "test-token",
+            }),
+            NullLogger<AzureDevOpsScmClient>.Instance);
+
+        var target = new RepositoryTarget(
+            "bank-otp-api",
+            "AzureDevOps",
+            "afs-dev",
+            "rps",
+            "bank-otp-api",
+            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "main",
+            "feature/settings-redaction",
+            "main",
+            884,
+            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/884",
+            "source-sha-settings",
+            "target-sha-settings",
+            "jira_development_pull_request");
+
+        var result = await client.GetCodeContextAsync(
+            target,
+            new RepositoryRetrievalOptions
+            {
+                MaxChangedFiles = 10,
+                MaxDiffLinesPerFile = 40,
+                MaxNeighboringTests = 0,
+            },
+            CreateConventions(),
+            CancellationToken.None);
+
+        var change = Assert.Single(result.ChangedFiles);
+        Assert.Equal("/settings/Default/Default.yaml", change.Path);
+        Assert.NotNull(change.DiffPreview);
+        Assert.Contains("[REDACTED]", change.DiffPreview, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-super-secret-value", change.DiffPreview, StringComparison.Ordinal);
+        Assert.DoesNotContain("new-super-secret-value", change.DiffPreview, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WriteAsync_CreatesBranchPushAndDraftPullRequest()
     {
         var handler = new StubHttpMessageHandler();
@@ -343,6 +391,17 @@ public sealed class AzureDevOpsScmClientTests
                           "status": "active"
                         }
                         """),
+                var value when value.Contains("/pullRequests/884?", StringComparison.OrdinalIgnoreCase)
+                    => Json("""
+                        {
+                          "pullRequestId": 884,
+                          "sourceRefName": "refs/heads/feature/settings-redaction",
+                          "targetRefName": "refs/heads/main",
+                          "lastMergeSourceCommit": { "commitId": "source-sha-settings" },
+                          "lastMergeTargetCommit": { "commitId": "target-sha-settings" },
+                          "status": "active"
+                        }
+                        """),
                 var value when value.Contains("/diffs/commits?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("baseVersion=target-sha-1", StringComparison.OrdinalIgnoreCase)
                     => Json("""
@@ -403,7 +462,7 @@ public sealed class AzureDevOpsScmClientTests
                         }
                         """),
                 var value when value.Contains("/diffs/commits?", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("baseVersion=target-sha", StringComparison.OrdinalIgnoreCase)
+                                value.Contains("baseVersion=target-sha&", StringComparison.OrdinalIgnoreCase)
                     => Json("""
                         {
                           "allChangesIncluded": true,
@@ -411,6 +470,19 @@ public sealed class AzureDevOpsScmClientTests
                             {
                               "changeType": "edit",
                               "item": { "path": "/src/Payments/RetryHandler.cs" }
+                            }
+                          ]
+                        }
+                        """),
+                var value when value.Contains("/diffs/commits?", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("baseVersion=target-sha-settings", StringComparison.OrdinalIgnoreCase)
+                    => Json("""
+                        {
+                          "allChangesIncluded": true,
+                          "changes": [
+                            {
+                              "changeType": "edit",
+                              "item": { "path": "/settings/Default/Default.yaml" }
                             }
                           ]
                         }
@@ -437,12 +509,28 @@ public sealed class AzureDevOpsScmClientTests
                     => Json("""{ "content": "public class RetryFlowTests { }" }"""),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("path=%2Fsrc%2FPayments%2FRetryHandler.cs", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("versionDescriptor.version=source-sha", StringComparison.OrdinalIgnoreCase)
+                                value.Contains("versionDescriptor.version=source-sha&", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "return true;" }"""),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("path=%2Fsrc%2FPayments%2FRetryHandler.cs", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("versionDescriptor.version=target-sha", StringComparison.OrdinalIgnoreCase)
+                                value.Contains("versionDescriptor.version=target-sha&", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "return false;" }"""),
+                var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2Fsettings%2FDefault%2FDefault.yaml", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("versionDescriptor.version=target-sha-settings", StringComparison.OrdinalIgnoreCase)
+                    => Json("""
+                        {
+                          "content": "ClientSecret:\n  value: new-super-secret-value\nBAG_API_KEY:\n  value: abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGH\n"
+                        }
+                        """),
+                var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2Fsettings%2FDefault%2FDefault.yaml", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("versionDescriptor.version=source-sha-settings", StringComparison.OrdinalIgnoreCase)
+                    => Json("""
+                        {
+                          "content": "ClientSecret:\n  value: old-super-secret-value\nBAG_API_KEY:\n  value: 1234567890abcdefghijklmnopqrstuvwxyzABCDEFGH\n"
+                        }
+                        """),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("scopePath=%2Fsrc%2FTests", StringComparison.OrdinalIgnoreCase)
                     => Json("""

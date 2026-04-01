@@ -70,10 +70,20 @@ internal sealed class FakeJiraApiClient : IJiraApiClient
             "Story",
             "High",
             comments,
+            [
+                new JiraLinkedIssue("QA-1001", "Test", "Retries transient callback failures", "Tests", "outward"),
+                new JiraLinkedIssue("QA-1002", "Test", "Does not retry terminal callback failures", "Tests", "outward"),
+            ],
             ["QA-1200"],
             ["payments", "retry"],
             developmentRepositories));
     }
+
+    public Task EnsureTestCoverageLinkAsync(
+        string requirementIssueKey,
+        string testIssueKey,
+        CancellationToken ct)
+        => Task.CompletedTask;
 }
 
 internal sealed class FakeConfluenceApiClient : IConfluenceApiClient
@@ -105,6 +115,7 @@ internal sealed class FakeConfluenceApiClient : IConfluenceApiClient
 internal sealed class FakeXrayApiClient : IXrayApiClient
 {
     private int _nextIssueNumber = 100;
+    private int _nextTestSetNumber = 1;
 
     public Task<IReadOnlyList<XrayTestCase>> SearchTestsAsync(
         XrayTestSearchRequest request,
@@ -113,7 +124,7 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
         [
             new XrayTestCase(
                 "20001",
-                "QA-T1",
+                "QA-1001",
                 "Retries transient callback failures",
                 "Cucumber",
                 "Scenario: Retry transient callback failure",
@@ -121,7 +132,7 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
                 ["payments", "retry"]),
             new XrayTestCase(
                 "20002",
-                "QA-T2",
+                "QA-1002",
                 "Does not retry terminal callback failures",
                 "Manual",
                 null,
@@ -134,6 +145,17 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
                 ["payments"]),
         ]);
 
+    public Task<IReadOnlyList<XrayTestSet>> SearchTestSetsAsync(
+        XrayTestSetSearchRequest request,
+        CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<XrayTestSet>>(
+        [
+            new XrayTestSet(
+                "50001",
+                "QA-TS1",
+                "bank-otp-api - Callbacks Test Set"),
+        ]);
+
     public Task<XrayTestCaseUpsertResult> UpsertTestCaseAsync(
         XrayTestCaseUpsertRequest request,
         CancellationToken ct)
@@ -142,8 +164,19 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
         var issueNumber = created ? Interlocked.Increment(ref _nextIssueNumber) : int.Parse(request.ExistingIssueId!, System.Globalization.CultureInfo.InvariantCulture);
         return Task.FromResult(new XrayTestCaseUpsertResult(
             issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            $"QA-T{issueNumber}",
+            $"QA-{issueNumber}",
             created));
+    }
+
+    public Task<XrayTestSetCreateResult> CreateTestSetAsync(
+        XrayTestSetCreateRequest request,
+        CancellationToken ct)
+    {
+        var issueNumber = Interlocked.Increment(ref _nextTestSetNumber);
+        return Task.FromResult(new XrayTestSetCreateResult(
+            (50000 + issueNumber).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            $"QA-TS{issueNumber}",
+            true));
     }
 
     public Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
@@ -159,7 +192,7 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
     public Task AddTestsToTestSetAsync(
         XrayAssociationUpdateRequest request,
         CancellationToken ct)
-        => throw new NotImplementedException();
+        => Task.CompletedTask;
 }
 
 internal sealed class FakeScmClient : IScmClient

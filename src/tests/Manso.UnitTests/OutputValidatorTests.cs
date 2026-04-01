@@ -108,6 +108,37 @@ public sealed class OutputValidatorTests
         Assert.Contains(result.Messages, message => message.Code == "generated_test_missing_assertion");
     }
 
+    [Fact]
+    public async Task ValidateAsync_Fails_WhenScenarioUsesUnknownAcceptanceCriteriaReference()
+    {
+        var validator = CreateValidator();
+
+        var result = await validator.ValidateAsync(
+            CreateBundle(),
+            new GeneratedScenarioBundle(
+                [
+                    new GeneratedScenario(
+                        "SCN-001",
+                        "Retry transient failure",
+                        "High",
+                        "Api",
+                        ["AC-99"],
+                        "Critical retry path changed.",
+                        ["Callback exists"],
+                        "Scenario: Retry transient callback failure",
+                        "Callback is retried",
+                        "No duplicate found"),
+                ],
+                "Mock",
+                "mock-model",
+                "{}"),
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(ValidationOutcome.Fail, result.Outcome);
+        Assert.Contains(result.Messages, message => message.Code == "scenario_grounding_ref_invalid");
+    }
+
     private static OutputValidator CreateValidator()
         => new(
             new ValidationOptions(),
@@ -125,6 +156,13 @@ public sealed class OutputValidatorTests
                 "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
                 null),
             [
+                new GenerationContextSection(
+                    "acceptance_criteria",
+                    "ACCEPTANCE CRITERIA",
+                    """
+                    AC-1: Retries must be idempotent.
+                    AC-2: Duplicate callbacks must be ignored.
+                    """),
                 new GenerationContextSection(
                     "repo_test_conventions",
                     "REPO TEST CONVENTIONS",

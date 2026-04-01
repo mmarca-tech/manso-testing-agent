@@ -10,8 +10,8 @@ public sealed class XrayContextServiceTests
     public async Task BuildAsync_ReturnsWarning_WhenDisabled()
     {
         var service = new XrayContextService(
-            new StubXrayApiClient(Array.Empty<XrayTestCase>()),
-            new XrayRetrievalOptions { Enabled = false, ProjectKey = "QA" },
+            new StubXrayApiClient(_ => Array.Empty<XrayTestCase>()),
+            new XrayRetrievalOptions { Enabled = false },
             NullLogger<XrayContextService>.Instance);
 
         var result = await service.BuildAsync(
@@ -29,18 +29,17 @@ public sealed class XrayContextServiceTests
     public async Task BuildAsync_QueriesXrayAndDeduplicatesResults()
     {
         var client = new StubXrayApiClient(
-        [
-            new XrayTestCase("20001", "QA-T1", "Retry callback", "Cucumber", "Scenario: Retry callback", Array.Empty<XrayTestStep>(), ["payments"]),
-            new XrayTestCase("20001", "QA-T1", "Retry callback", "Cucumber", "Scenario: Retry callback", Array.Empty<XrayTestStep>(), ["payments"]),
-        ]);
+            _ =>
+            [
+                new XrayTestCase("20001", "QA-T1", "Retry callback", "Cucumber", "Scenario: Retry callback", Array.Empty<XrayTestStep>(), ["payments"]),
+                new XrayTestCase("20001", "QA-T1", "Retry callback", "Cucumber", "Scenario: Retry callback", Array.Empty<XrayTestStep>(), ["payments"]),
+            ]);
         var service = new XrayContextService(
             client,
             new XrayRetrievalOptions
             {
                 Enabled = true,
-                ProjectKey = "QA",
                 MaxNeighboringTests = 5,
-                SearchJqlTemplate = "project = {XRAY_PROJECT_KEY} AND text ~ \"\\\"{ISSUE_KEY}\\\"\" AND text ~ \"\\\"{ISSUE_SUMMARY}\\\"\"",
             },
             NullLogger<XrayContextService>.Instance);
 
@@ -52,24 +51,23 @@ public sealed class XrayContextServiceTests
             CancellationToken.None);
 
         Assert.Single(result.NeighboringTests);
-        Assert.NotNull(client.LastRequest);
-        Assert.Contains("project = QA", client.LastRequest!.Jql);
-        Assert.Contains("QA-1234", client.LastRequest.Jql);
-        Assert.Contains("Retry callback", client.LastRequest.Jql);
+        Assert.NotEmpty(client.Requests);
+        Assert.Contains(client.Requests, request => request.Jql.Contains("project = QA", StringComparison.Ordinal));
+        Assert.Contains(client.Requests, request => request.Jql.Contains("QA-1234", StringComparison.Ordinal));
+        Assert.Contains(client.Requests, request => request.Jql.Contains("Retry callback", StringComparison.Ordinal));
+        Assert.Contains(client.Requests, request => request.Jql.Contains("issuetype in (\"Test Case\", \"Test\")", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task BuildAsync_UsesProjectPrefixFromIssueKey()
     {
-        var client = new StubXrayApiClient(Array.Empty<XrayTestCase>());
+        var client = new StubXrayApiClient(_ => Array.Empty<XrayTestCase>());
         var service = new XrayContextService(
             client,
             new XrayRetrievalOptions
             {
                 Enabled = true,
-                ProjectKey = "QA",
                 MaxNeighboringTests = 5,
-                SearchJqlTemplate = "project = {XRAY_PROJECT_KEY} AND text ~ \"\\\"{ISSUE_KEY}\\\"\"",
             },
             NullLogger<XrayContextService>.Instance);
 
@@ -80,27 +78,96 @@ public sealed class XrayContextServiceTests
             null,
             CancellationToken.None);
 
-        Assert.NotNull(client.LastRequest);
-        Assert.Contains("project = RM", client.LastRequest!.Jql);
-        Assert.DoesNotContain("project = QA", client.LastRequest.Jql);
+        Assert.NotEmpty(client.Requests);
+        Assert.Contains(client.Requests, request => request.Jql.Contains("project = RM", StringComparison.Ordinal));
+        Assert.Contains(client.Requests, request => request.Jql.Contains("issue in linkedIssues(\"RM-18999\")", StringComparison.Ordinal));
+        Assert.Contains(client.Requests, request => request.Jql.Contains("issuetype in (\"Test Case\", \"Test\")", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BuildAsync_IncludesTestsAlreadyLinkedToIssue_InBundleContext()
+    {
+        var client = new StubXrayApiClient(request =>
+            request.Jql.Contains("issue in linkedIssues(\"QA-1234\")", StringComparison.Ordinal) ||
+            request.Jql.Contains("key in (\"QA-T2\")", StringComparison.Ordinal)
+                ? [new XrayTestCase("20002", "QA-T2", "Manually created linked test", "Manual", null, Array.Empty<XrayTestStep>(), ["payments"])]
+                : Array.Empty<XrayTestCase>());
+        var service = new XrayContextService(
+            client,
+            new XrayRetrievalOptions
+            {
+                Enabled = true,
+                MaxNeighboringTests = 5,
+            },
+            NullLogger<XrayContextService>.Instance);
+
+        var result = await service.BuildAsync(
+            CreateRequest(),
+            CreateIssue(),
+            null,
+            null,
+            CancellationToken.None);
+
+        var test = Assert.Single(result.NeighboringTests);
+        Assert.Equal("QA-T2", test.IssueKey);
+        Assert.Contains(client.Requests, request => request.Jql.Contains("issue in linkedIssues(\"QA-1234\")", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BuildAsync_DoesNotCapLinkedTestsToNeighborLimit()
+    {
+        var linkedIssues = Enumerable.Range(1, 12)
+            .Select(index => new JiraLinkedIssue($"QA-T{index}", "Test", $"Test {index}", "Tests", "outward"))
+            .ToArray();
+        var client = new StubXrayApiClient(request =>
+            request.Jql.Contains("issue in linkedIssues(\"QA-1234\")", StringComparison.Ordinal)
+                ? linkedIssues.Select((issue, index) =>
+                    new XrayTestCase(
+                        (30000 + index).ToString(),
+                        issue.IssueKey,
+                        issue.Summary ?? issue.IssueKey,
+                        "Manual",
+                        null,
+                        Array.Empty<XrayTestStep>(),
+                        Array.Empty<string>()))
+                    .ToArray()
+                : Array.Empty<XrayTestCase>());
+        var service = new XrayContextService(
+            client,
+            new XrayRetrievalOptions
+            {
+                Enabled = true,
+                MaxNeighboringTests = 5,
+            },
+            NullLogger<XrayContextService>.Instance);
+
+        var result = await service.BuildAsync(
+            CreateRequest(),
+            CreateIssue(linkedIssues: linkedIssues),
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(12, result.NeighboringTests.Count);
+        Assert.Contains(client.Requests, request => request.Jql.Contains("issue in linkedIssues(\"QA-1234\")", StringComparison.Ordinal) && request.Limit == 12);
     }
 
     private static NormalizedRunRequest CreateRequest(string issueKey = "QA-1234")
         => new(
             issueKey,
-            $"https://yourcompany.atlassian.net/browse/{issueKey}",
             GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
             "bank-otp-api",
-            null,
             Array.Empty<string>(),
             CoverageIntent.Regression,
             OutputTarget.JiraComment,
             new RequestedBy("abc", "Manuel", "manuel@example.com"),
             DocumentationMode.ExplicitOnly);
 
-    private static JiraIssueContext CreateIssue(string issueKey = "QA-1234")
+    private static JiraIssueContext CreateIssue(
+        string issueKey = "QA-1234",
+        IReadOnlyList<JiraLinkedIssue>? linkedIssues = null)
         => new(
             issueKey,
             "Retry callback",
@@ -109,31 +176,44 @@ public sealed class XrayContextServiceTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            linkedIssues ?? (issueKey == "QA-1234"
+                ? [new JiraLinkedIssue("QA-T2", "Test", "Manually created linked test", "Tests", "outward")]
+                : Array.Empty<JiraLinkedIssue>()),
             ["QA-1200"],
             ["payments"],
             Array.Empty<JiraDevelopmentRepository>());
 
     private sealed class StubXrayApiClient : IXrayApiClient
     {
-        private readonly IReadOnlyList<XrayTestCase> _results;
+        private readonly Func<XrayTestSearchRequest, IReadOnlyList<XrayTestCase>> _resultsFactory;
 
-        public StubXrayApiClient(IReadOnlyList<XrayTestCase> results)
+        public StubXrayApiClient(Func<XrayTestSearchRequest, IReadOnlyList<XrayTestCase>> resultsFactory)
         {
-            _results = results;
+            _resultsFactory = resultsFactory;
         }
 
-        public XrayTestSearchRequest? LastRequest { get; private set; }
+        public List<XrayTestSearchRequest> Requests { get; } = [];
 
         public Task<IReadOnlyList<XrayTestCase>> SearchTestsAsync(
             XrayTestSearchRequest request,
             CancellationToken ct)
         {
-            LastRequest = request;
-            return Task.FromResult(_results);
+            Requests.Add(request);
+            return Task.FromResult(_resultsFactory(request));
         }
 
         public Task<XrayTestCaseUpsertResult> UpsertTestCaseAsync(
             XrayTestCaseUpsertRequest request,
+            CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<XrayTestSet>> SearchTestSetsAsync(
+            XrayTestSetSearchRequest request,
+            CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<XrayTestSetCreateResult> CreateTestSetAsync(
+            XrayTestSetCreateRequest request,
             CancellationToken ct)
             => throw new NotSupportedException();
 

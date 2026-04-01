@@ -2,7 +2,6 @@ using Manso.Application;
 using Manso.Domain;
 using Manso.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace Manso.UnitTests;
 
@@ -29,6 +28,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -71,7 +71,7 @@ public sealed class RepositoryResolverTests
     }
 
     [Fact]
-    public async Task ResolveAsync_UsesSingleConfiguredRepo_WhenAliasMissing()
+    public async Task ResolveAsync_ThrowsRepositoryContextUnavailable_WhenNoDevelopmentRepositoriesExist()
     {
         var resolver = CreateResolver(new StubScmClient(null));
 
@@ -84,12 +84,128 @@ public sealed class RepositoryResolverTests
     }
 
     [Fact]
+    public async Task ResolveAsync_UsesJiraDevelopmentRepository_WhenAliasIsMissing()
+    {
+        var resolver = CreateResolver(new StubScmClient(
+            new RepositoryPullRequest(
+                134025,
+                "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations/pullrequest/134025",
+                "RM-15891",
+                "main",
+                "source-sha",
+                "target-sha",
+                "active")));
+        var issue = new JiraIssueContext(
+            "RM-15888",
+            "Retry callback",
+            "Issue description",
+            null,
+            "Story",
+            "High",
+            Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            [
+                new JiraDevelopmentRepository(
+                    "afs-dev/risk/zde-workflow-shared-configurations",
+                    "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations",
+                    Array.Empty<JiraDevelopmentBranch>(),
+                    [
+                        new JiraDevelopmentPullRequest(
+                            "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations/pullrequest/134025",
+                            "MERGED",
+                            "RM-15891",
+                            "refs/heads/main",
+                            DateTimeOffset.Parse("2026-03-28T08:00:00Z")),
+                    ]),
+            ]);
+
+        var result = await resolver.ResolveAsync(
+            issue,
+            CreateRequest(repositoryAlias: null, branchOrPrHint: null),
+            CancellationToken.None);
+
+        Assert.Equal("zde-workflow-shared-configurations", result.Alias);
+        Assert.Equal("risk", result.Project);
+        Assert.Equal(134025, result.PullRequestId);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_UsesSingleJiraDevelopmentRepository_WhenAliasIsMissing()
+    {
+        var resolver = CreateResolver(
+            new StubScmClient(
+                new RepositoryPullRequest(
+                    882,
+                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                    "feature/qa-1234",
+                    "main",
+                    "source-sha",
+                    "target-sha",
+                    "active")));
+
+        var issue = new JiraIssueContext(
+            "QA-1234",
+            "Retry callback",
+            "Issue description",
+            null,
+            "Story",
+            "High",
+            Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            [
+                new JiraDevelopmentRepository(
+                    "afs-dev/rps/bank-otp-api",
+                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    Array.Empty<JiraDevelopmentBranch>(),
+                    [
+                        new JiraDevelopmentPullRequest(
+                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                            "MERGED",
+                            "feature/qa-1234",
+                            "refs/heads/main",
+                            DateTimeOffset.Parse("2026-03-28T08:00:00Z")),
+                    ]),
+            ]);
+
+        var result = await resolver.ResolveAsync(
+            issue,
+            CreateRequest(repositoryAlias: null, branchOrPrHint: null),
+            CancellationToken.None);
+
+        Assert.Equal("bank-otp-api", result.Alias);
+        Assert.Equal(882, result.PullRequestId);
+    }
+
+    [Fact]
     public async Task ResolveAsync_Fails_WhenAliasIsUnknown()
     {
         var resolver = CreateResolver(new StubScmClient(null));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync(
-            CreateIssue(),
+        var issue = new JiraIssueContext(
+            "QA-1234",
+            "Retry callback",
+            "Issue description",
+            null,
+            "Story",
+            "High",
+            Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            [
+                new JiraDevelopmentRepository(
+                    "afs-dev/rps/bank-otp-api",
+                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    Array.Empty<JiraDevelopmentBranch>(),
+                    Array.Empty<JiraDevelopmentPullRequest>()),
+            ]);
+
+        await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
+            issue,
             CreateRequest(repositoryAlias: "unknown-repo", branchOrPrHint: "feature/qa-1234"),
             CancellationToken.None));
     }
@@ -109,21 +225,6 @@ public sealed class RepositoryResolverTests
 
     private static RepositoryResolver CreateResolver(IScmClient scmClient)
         => new(
-            Options.Create(new RepoAdapterOptions
-            {
-                Repositories = new Dictionary<string, RepoDefinition>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["bank-otp-api"] = new()
-                    {
-                        Provider = "AzureDevOps",
-                        Organization = "afs-dev",
-                        Project = "rps",
-                        RepositoryName = "bank-otp-api",
-                        RepositoryUrl = "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
-                        DefaultBranch = "main",
-                    },
-                },
-            }),
             scmClient,
             NullLogger<RepositoryResolver>.Instance);
 
@@ -136,6 +237,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             Array.Empty<JiraDevelopmentRepository>());
@@ -161,6 +263,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -198,6 +301,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -225,11 +329,59 @@ public sealed class RepositoryResolverTests
             CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
             CancellationToken.None));
 
-        Assert.Contains("no usable merged pull requests were present", exception.Message);
+        Assert.Contains("no usable Jira development pull requests were present", exception.Message);
     }
 
     [Fact]
-    public async Task ResolveAsync_IgnoresNonMergedJiraDevelopmentPullRequests_WhenDeterminingAvailability()
+    public async Task ResolveAsync_UsesOpenJiraDevelopmentPullRequests_ForScenarioDesign()
+    {
+        var resolver = CreateResolver(new StubScmClient(
+            new RepositoryPullRequest(
+                134398,
+                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                "feature/rm-15888-shadow-mode",
+                "main",
+                "source-sha",
+                "target-sha",
+                "active")));
+        var issue = new JiraIssueContext(
+            "RM-15888",
+            "Retry callback",
+            "Issue description",
+            null,
+            "Story",
+            "High",
+            Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            [
+                new JiraDevelopmentRepository(
+                    "afs-dev/rps/bank-otp-api",
+                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    Array.Empty<JiraDevelopmentBranch>(),
+                    [
+                        new JiraDevelopmentPullRequest(
+                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                            "OPEN",
+                            "feature/rm-15888-shadow-mode",
+                            "refs/heads/main",
+                            DateTimeOffset.Parse("2026-03-28T08:00:00Z")),
+                    ]),
+            ]);
+
+        var result = await resolver.ResolveAsync(
+            issue,
+            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CancellationToken.None);
+
+        Assert.Equal(134398, result.PullRequestId);
+        Assert.Equal("feature/rm-15888-shadow-mode", result.BranchName);
+        Assert.Equal("jira_development_pull_request", result.ResolutionEvidence);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_IgnoresOpenJiraDevelopmentPullRequests_ForAutomationImplementation()
     {
         var resolver = CreateResolver(new StubScmClient(null));
         var issue = new JiraIssueContext(
@@ -240,6 +392,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -259,10 +412,10 @@ public sealed class RepositoryResolverTests
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null, workflowPass: WorkflowPass.AutomationImplementation),
             CancellationToken.None));
 
-        Assert.Contains("no usable merged pull requests were present", exception.Message);
+        Assert.Contains("no usable Jira development pull requests were present", exception.Message);
     }
 
     [Fact]
@@ -277,6 +430,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -315,6 +469,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -330,7 +485,7 @@ public sealed class RepositoryResolverTests
             CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
             CancellationToken.None));
 
-        Assert.Contains("matched it, but no usable merged pull requests were present", exception.Message);
+        Assert.Contains("matched it, but no usable Jira development pull requests were present", exception.Message);
     }
 
     [Fact]
@@ -346,6 +501,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -399,6 +555,7 @@ public sealed class RepositoryResolverTests
             "Story",
             "High",
             Array.Empty<JiraCommentContext>(),
+            Array.Empty<JiraLinkedIssue>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             [
@@ -445,12 +602,10 @@ public sealed class RepositoryResolverTests
         WorkflowPass workflowPass = WorkflowPass.ScenarioDesign)
         => new(
             "QA-1234",
-            "https://yourcompany.atlassian.net/browse/QA-1234",
             GenerationMode.TestCasesOnly,
             workflowPass,
             TestScope.Api,
             repositoryAlias,
-            branchOrPrHint,
             Array.Empty<string>(),
             CoverageIntent.Regression,
             OutputTarget.JiraComment,

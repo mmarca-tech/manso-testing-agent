@@ -16,6 +16,7 @@ public sealed class GenerationContextBundleBuilderTests
                 MaxNeighboringTests = 3,
                 MaxComments = 3,
             },
+            new StubRuntimePromptSectionProvider(),
             NullLogger<GenerationContextBundleBuilder>.Instance);
 
         var bundle = await builder.BuildAsync(
@@ -35,11 +36,20 @@ public sealed class GenerationContextBundleBuilderTests
 
         Assert.Contains(bundle.Sections, section => section.Key == "repo_change_summary");
         Assert.Contains(bundle.Sections, section => section.Key == "neighboring_test_patterns");
+        Assert.Contains(bundle.Sections, section => section.Key == "existing_xray_coverage_index");
+        Assert.Contains(bundle.Sections, section => section.Key == "existing_linked_xray_tests");
         Assert.Contains(bundle.Sections, section => section.Key == "xray_neighboring_tests");
         Assert.Contains(bundle.Sections, section => section.Key == "repo_test_conventions");
+        Assert.Contains(bundle.Sections, section => section.Key == "runtime_guardrails");
         Assert.Equal(1, bundle.NeighboringTestCount);
         Assert.Equal(1, bundle.XrayNeighboringTestCount);
         Assert.Empty(bundle.Warnings);
+        Assert.Contains(
+            "QA-T1: Retry transient callback failure",
+            bundle.Sections.Single(section => section.Key == "existing_linked_xray_tests").Content);
+        Assert.Contains(
+            "reuse that Xray key instead of creating a duplicate",
+            bundle.Sections.Single(section => section.Key == "existing_xray_coverage_index").Content);
         Assert.Contains(
             "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
             bundle.Sections.Single(section => section.Key == "run_metadata").Content);
@@ -50,6 +60,7 @@ public sealed class GenerationContextBundleBuilderTests
     {
         var builder = new GenerationContextBundleBuilder(
             new GenerationContextOptions(),
+            new StubRuntimePromptSectionProvider(),
             NullLogger<GenerationContextBundleBuilder>.Instance);
 
         var bundle = await builder.BuildAsync(
@@ -71,6 +82,7 @@ public sealed class GenerationContextBundleBuilderTests
     {
         var builder = new GenerationContextBundleBuilder(
             new GenerationContextOptions(),
+            new StubRuntimePromptSectionProvider(),
             NullLogger<GenerationContextBundleBuilder>.Instance);
 
         var repositoryTarget = CreateTarget() with
@@ -105,15 +117,73 @@ public sealed class GenerationContextBundleBuilderTests
         Assert.Contains("pullrequest/882", runMetadata);
     }
 
+    [Fact]
+    public async Task BuildAsync_IncludesDescriptionReferencedJiraIssues_WhenPresent()
+    {
+        var builder = new GenerationContextBundleBuilder(
+            new GenerationContextOptions(),
+            new StubRuntimePromptSectionProvider(),
+            NullLogger<GenerationContextBundleBuilder>.Instance);
+
+        var bundle = await builder.BuildAsync(
+            CreateRequest(),
+            CreateIssue() with
+            {
+                DescriptionReferencedIssues =
+                [
+                    new JiraReferencedIssueContext(
+                        "QA-5678",
+                        "Original callback rollout",
+                        "The original rollout stores the callback status before retry evaluation."),
+                ],
+            },
+            CreateDocuments(),
+            null,
+            null,
+            new XrayContextBundle(Array.Empty<XrayTestCase>(), Array.Empty<RunWarning>()),
+            CancellationToken.None);
+
+        var section = Assert.Single(bundle.Sections.Where(candidate => candidate.Key == "description_referenced_jira_issues"));
+        Assert.Contains("QA-5678 - Original callback rollout", section.Content);
+        Assert.Contains("stores the callback status before retry evaluation", section.Content);
+    }
+
+    [Fact]
+    public async Task BuildAsync_FormatsAcceptanceCriteriaWithStableReferences()
+    {
+        var builder = new GenerationContextBundleBuilder(
+            new GenerationContextOptions(),
+            new StubRuntimePromptSectionProvider(),
+            NullLogger<GenerationContextBundleBuilder>.Instance);
+
+        var bundle = await builder.BuildAsync(
+            CreateRequest(),
+            CreateIssue() with
+            {
+                AcceptanceCriteria =
+                """
+                - Retries must be idempotent.
+                - Duplicate callbacks must be ignored.
+                """
+            },
+            CreateDocuments(),
+            null,
+            null,
+            new XrayContextBundle(Array.Empty<XrayTestCase>(), Array.Empty<RunWarning>()),
+            CancellationToken.None);
+
+        var section = Assert.Single(bundle.Sections.Where(candidate => candidate.Key == "acceptance_criteria"));
+        Assert.Contains("AC-1: Retries must be idempotent.", section.Content);
+        Assert.Contains("AC-2: Duplicate callbacks must be ignored.", section.Content);
+    }
+
     private static NormalizedRunRequest CreateRequest()
         => new(
             "QA-1234",
-            "https://yourcompany.atlassian.net/browse/QA-1234",
             GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
             "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
             [
                 "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
             ],
@@ -131,6 +201,7 @@ public sealed class GenerationContextBundleBuilderTests
             "Story",
             "High",
             [new JiraCommentContext("1", "Alice", "Check edge cases", DateTimeOffset.UtcNow)],
+            [new JiraLinkedIssue("QA-T1", "Test", "Retry transient callback failure", "Tests", "outward")],
             ["QA-1111"],
             ["payments"],
             Array.Empty<JiraDevelopmentRepository>());
@@ -195,4 +266,13 @@ public sealed class GenerationContextBundleBuilderTests
                     ["payments"])
             ],
             Array.Empty<RunWarning>());
+
+    private sealed class StubRuntimePromptSectionProvider : IRuntimePromptSectionProvider
+    {
+        public GenerationContextSection BuildScenarioGenerationSection(RunMetadataContext metadata)
+            => new(
+                "runtime_guardrails",
+                "RUNTIME GUARDRAILS",
+                $"Requested scope for this run: {metadata.TestScope}.");
+    }
 }

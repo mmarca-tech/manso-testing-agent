@@ -16,24 +16,13 @@ public sealed class RunStoreJsonSerializerTests
                     "Manual",
                     new RawIssuePayload(
                         "QA-1234",
-                        "10001",
-                        "QA",
-                        "Story",
-                        "Add retry handling",
-                        "Issue description",
-                        "https://yourcompany.atlassian.net/browse/QA-1234"),
+                        "10001"),
                     new RawTriggerInputs(
                         "ExecutableTests",
                         "ScenarioDesign",
-                        "Api",
-                        "payments-api",
-                        "https://git.example.com/org/payments-api/pull/882",
                         "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
                         "Regression",
                         "Both"),
-                    new RawIssueFields(
-                        "payments-api",
-                        "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract"),
                     new RawRequester(
                         "abc-123",
                         "Manuel Marcatili",
@@ -42,12 +31,10 @@ public sealed class RunStoreJsonSerializerTests
                 DateTimeOffset.Parse("2026-03-27T10:15:52Z"))
             .WithNormalizedRequest(new NormalizedRunRequest(
                 "QA-1234",
-                "https://yourcompany.atlassian.net/browse/QA-1234",
                 GenerationMode.ExecutableTests,
                 WorkflowPass.ScenarioDesign,
                 TestScope.Api,
                 "payments-api",
-                "feature/QA-1234",
                 ["https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow"],
                 CoverageIntent.Regression,
                 OutputTarget.Both,

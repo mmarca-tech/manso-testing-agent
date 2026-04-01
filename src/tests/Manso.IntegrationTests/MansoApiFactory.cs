@@ -25,7 +25,6 @@ public sealed class MansoApiFactory : WebApplicationFactory<Program>
                 ["RequestNormalization:DefaultCoverageIntent"] = "Regression",
                 ["RequestNormalization:DefaultOutputTarget"] = "JiraComment",
                 ["XrayRetrieval:Enabled"] = "true",
-                ["XrayRetrieval:ProjectKey"] = "QA",
                 ["XrayRetrieval:EnableScenarioAutoUpsert"] = "true",
             });
         });
@@ -42,11 +41,9 @@ public sealed class MansoApiFactory : WebApplicationFactory<Program>
             services.AddSingleton(new XrayRetrievalOptions
             {
                 Enabled = true,
-                ProjectKey = "QA",
                 EnableScenarioAutoUpsert = true,
                 DefaultCreatedTestType = "Cucumber",
                 MaxNeighboringTests = 5,
-                SearchJqlTemplate = "project = {XRAY_PROJECT_KEY} AND issuetype = Test AND (text ~ \"\\\"{ISSUE_KEY}\\\"\" OR text ~ \"\\\"{ISSUE_SUMMARY}\\\"\") ORDER BY updated DESC",
             });
             services.AddSingleton<IScmClient, FakeScmClient>();
         });

@@ -15,26 +15,17 @@ public sealed class RequestNormalizerTests
         });
 
         var request = CreateRequest(
-            description: """
-                Story details
-                https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
-                """,
-            repositoryOverride: "payments-api-manual",
-            configuredRepository: "payments-api-configured",
             extraDocumentationLinks: """
                 https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
-                https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract
-                """,
-            documentationLinks: """
                 https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
                 https://yourcompany.atlassian.net/wiki/spaces/QA/pages/11111/Test+Strategy
+                https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract
                 """);
 
         var result = await normalizer.NormalizeAsync(request, CancellationToken.None);
 
         Assert.Equal(WorkflowPass.ScenarioDesign, result.Request.WorkflowPass);
-        Assert.Equal("payments-api-manual", result.Request.RepositoryAlias);
-        Assert.Null(result.Request.BranchOrPrHint);
+        Assert.Null(result.Request.RepositoryAlias);
         Assert.Equal(
             [
                 "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
@@ -43,7 +34,7 @@ public sealed class RequestNormalizerTests
             ],
             result.Request.ExplicitDocumentationLinks);
         Assert.Equal(DocumentationMode.ExplicitOnly, result.Request.DocumentationMode);
-        Assert.Contains(result.Warnings, warning => warning.Code == "branch_or_pr_override_ignored");
+        Assert.Empty(result.Warnings);
     }
 
     [Fact]
@@ -81,8 +72,7 @@ public sealed class RequestNormalizerTests
         });
 
         var request = CreateRequest(
-            description: "See https://example.com/specs/123 and http://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
-            branchOrPrOverride: null);
+            extraDocumentationLinks: "https://example.com/specs/123\nhttp://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow");
 
         var result = await normalizer.NormalizeAsync(request, CancellationToken.None);
 
@@ -91,38 +81,35 @@ public sealed class RequestNormalizerTests
         Assert.Equal(2, result.Warnings.Count);
     }
 
+    [Fact]
+    public async Task NormalizeAsync_CarriesDryRunFlag()
+    {
+        var normalizer = new RequestNormalizer(new RequestNormalizationOptions());
+        var request = CreateRequest(dryRun: true);
+
+        var result = await normalizer.NormalizeAsync(request, CancellationToken.None);
+
+        Assert.True(result.Request.DryRun);
+    }
+
     private static RawRunRequest CreateRequest(
-        string description = "Issue description",
         string? generationMode = "ExecutableTests",
         string? workflowPass = "ScenarioDesign",
-        string? repositoryOverride = null,
-        string? branchOrPrOverride = " feature/QA-1234 ",
-        string? configuredRepository = null,
         string? extraDocumentationLinks = null,
-        string? documentationLinks = null)
+        bool dryRun = false)
         => new(
             "JiraAutomation",
             "Manual",
             new RawIssuePayload(
                 "QA-1234",
-                "10001",
-                "QA",
-                "Story",
-                "Add retry handling",
-                description,
-                "https://yourcompany.atlassian.net/browse/QA-1234"),
+                "10001"),
             new RawTriggerInputs(
                 generationMode,
                 workflowPass,
-                "Api",
-                repositoryOverride,
-                branchOrPrOverride,
                 extraDocumentationLinks,
                 "Regression",
-                "Both"),
-            new RawIssueFields(
-                configuredRepository,
-                documentationLinks),
+                "Both",
+                dryRun),
             new RawRequester(
                 "abc-123",
                 "Manuel Marcatili",
