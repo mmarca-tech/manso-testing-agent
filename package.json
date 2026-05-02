@@ -13,9 +13,6 @@
     },
     "./package.json": "./package.json"
   },
-  "publishConfig": {
-    "registry": "https://pkgs.dev.azure.com/afs-dev/_packaging/riverty-testing-commons/npm/registry/"
-  },
   "bin": {
     "extract-ticket": "./dist/extractTicketCli.js",
     "summarize-pr-changes": "./dist/prChangesCli.js",
