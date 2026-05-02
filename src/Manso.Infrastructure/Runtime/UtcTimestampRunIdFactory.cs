@@ -1,5 +1,5 @@
-using System.Globalization;
 using Manso.Application;
+using System.Globalization;
 
 namespace Manso.Infrastructure;
 
@@ -7,8 +7,8 @@ public sealed class UtcTimestampRunIdFactory : IRunIdFactory
 {
     private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
+    private string _currentTimestamp = string.Empty;
     private int _sequence;
-    private string _currentDay = string.Empty;
 
     public UtcTimestampRunIdFactory(TimeProvider timeProvider)
     {
@@ -19,15 +19,18 @@ public sealed class UtcTimestampRunIdFactory : IRunIdFactory
     {
         lock (_sync)
         {
-            var day = _timeProvider.GetUtcNow().ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-            if (!string.Equals(day, _currentDay, StringComparison.Ordinal))
+            var timestamp = _timeProvider.GetUtcNow().ToString("yyyyMMdd-HHmmssfff", CultureInfo.InvariantCulture);
+            if (!string.Equals(timestamp, _currentTimestamp, StringComparison.Ordinal))
             {
-                _currentDay = day;
+                _currentTimestamp = timestamp;
                 _sequence = 0;
             }
+            else
+            {
+                _sequence++;
+            }
 
-            _sequence++;
-            return $"RUN-{day}-{_sequence:0000}";
+            return $"RUN-{timestamp}-{_sequence:0000}";
         }
     }
 }

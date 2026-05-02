@@ -1,6 +1,6 @@
-using System.Text;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace Manso.Application;
 
@@ -36,7 +36,9 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
         _logger = logger;
     }
 
-    public GenerationContextSection BuildScenarioGenerationSection(RunMetadataContext metadata)
+    public GenerationContextSection BuildScenarioGenerationSection(
+        TestScope testScope,
+        WorkflowPass workflowPass)
     {
         try
         {
@@ -46,23 +48,23 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
                 _logger.LogWarning(
                     "Runtime prompt root '{ConfiguredRootPath}' was not found. Falling back to built-in guardrails.",
                     GetConfiguredRootPath());
-                return BuildFallbackSection(metadata);
+                return BuildFallbackSection(testScope, workflowPass);
             }
 
             var personalityMarkdown = TryReadMarkdown(Path.Combine(runtimeRoot, "agent-personality.md"));
-            var executableGuardrailsMarkdown = TryReadMarkdown(Path.Combine(runtimeRoot, "executable-generation-guardrails.md"));
-            if (string.IsNullOrWhiteSpace(personalityMarkdown) || string.IsNullOrWhiteSpace(executableGuardrailsMarkdown))
+            var scenarioGuardrailsMarkdown = TryReadMarkdown(Path.Combine(runtimeRoot, "scenario-generation-guardrails.md"));
+            if (string.IsNullOrWhiteSpace(personalityMarkdown) || string.IsNullOrWhiteSpace(scenarioGuardrailsMarkdown))
             {
                 _logger.LogWarning(
                     "Runtime prompt markdown was incomplete under '{RuntimeRoot}'. Falling back to built-in guardrails.",
                     runtimeRoot);
-                return BuildFallbackSection(metadata);
+                return BuildFallbackSection(testScope, workflowPass);
             }
 
             return new GenerationContextSection(
                 "runtime_guardrails",
                 "RUNTIME GUARDRAILS",
-                BuildControlledSection(metadata, personalityMarkdown, executableGuardrailsMarkdown));
+                BuildControlledSection(testScope, workflowPass, personalityMarkdown, scenarioGuardrailsMarkdown));
         }
         catch (ArgumentException ex)
         {
@@ -70,7 +72,7 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
                 ex,
                 "Runtime prompt path configuration '{ConfiguredRootPath}' was invalid. Falling back to built-in guardrails.",
                 _options.RootPath);
-            return BuildFallbackSection(metadata);
+            return BuildFallbackSection(testScope, workflowPass);
         }
         catch (NotSupportedException ex)
         {
@@ -78,11 +80,13 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
                 ex,
                 "Runtime prompt path configuration '{ConfiguredRootPath}' was not supported. Falling back to built-in guardrails.",
                 _options.RootPath);
-            return BuildFallbackSection(metadata);
+            return BuildFallbackSection(testScope, workflowPass);
         }
     }
 
-    private static GenerationContextSection BuildFallbackSection(RunMetadataContext metadata)
+    private static GenerationContextSection BuildFallbackSection(
+        TestScope testScope,
+        WorkflowPass workflowPass)
         => new(
             "runtime_guardrails",
             "RUNTIME GUARDRAILS",
@@ -110,13 +114,15 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
             - Keep scenario artifacts Gherkin-first for reviewability.
             - Do not silently widen file scope, repo scope, or retrieval scope.
 
-            Requested scope for this run: {{metadata.TestScope}}.
+            Requested scope for this run: {{testScope}}.
+            Workflow pass for this run: {{workflowPass}}.
             """);
 
     private static string BuildControlledSection(
-        RunMetadataContext metadata,
+        TestScope testScope,
+        WorkflowPass workflowPass,
         string personalityMarkdown,
-        string executableGuardrailsMarkdown)
+        string scenarioGuardrailsMarkdown)
     {
         var personalitySection = GetSectionContent(personalityMarkdown, "Personality");
         var personalitySentences = SplitSentences(personalitySection)
@@ -142,8 +148,8 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
             .Where(bullet => ScenarioQualityKeywords.Any(keyword => bullet.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
 
-        var runtimeRuleBullets = GetBullets(executableGuardrailsMarkdown, "Runtime rules");
-        var implementationStanceBullets = GetBullets(executableGuardrailsMarkdown, "Implementation stance");
+        var runtimeRuleBullets = GetBullets(scenarioGuardrailsMarkdown, "Runtime rules");
+        var implementationStanceBullets = GetBullets(scenarioGuardrailsMarkdown, "Implementation stance");
         var selectedRuntimeBullets = runtimeRuleBullets
             .Concat(implementationStanceBullets)
             .Where(bullet => RuntimeRuleKeywords.Any(keyword => bullet.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
@@ -157,7 +163,8 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
         AppendGroup(builder, "Grounding and scope", selectedCoreBehaviorBullets);
         AppendGroup(builder, "Scenario quality", selectedQualityBullets);
         AppendGroup(builder, "Runtime safeguards", selectedRuntimeBullets);
-        builder.AppendLine($"Requested scope for this run: {metadata.TestScope}.");
+        builder.AppendLine($"Requested scope for this run: {testScope}.");
+        builder.AppendLine($"Workflow pass for this run: {workflowPass}.");
 
         return builder.ToString().Trim();
     }
@@ -214,7 +221,7 @@ public sealed class MarkdownRuntimePromptSectionProvider : IRuntimePromptSection
 
     private static bool ContainsRuntimeMarkdown(string path)
         => File.Exists(Path.Combine(path, "agent-personality.md")) &&
-           File.Exists(Path.Combine(path, "executable-generation-guardrails.md"));
+           File.Exists(Path.Combine(path, "scenario-generation-guardrails.md"));
 
     private string? TryReadMarkdown(string path)
     {

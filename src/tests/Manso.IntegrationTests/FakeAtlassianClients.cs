@@ -28,18 +28,18 @@ internal sealed class FakeJiraApiClient : IJiraApiClient
             ? new[]
             {
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/881",
                             "MERGED",
                             "feature/qa-multipr-1",
                             "refs/heads/main",
                             DateTimeOffset.Parse("2026-03-27T08:00:00Z")),
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                             "MERGED",
                             "feature/qa-multipr-2",
                             "refs/heads/main",
@@ -49,12 +49,12 @@ internal sealed class FakeJiraApiClient : IJiraApiClient
             : new[]
             {
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                             "MERGED",
                             "feature/qa-1234-retry-handling",
                             "refs/heads/main",
@@ -65,8 +65,11 @@ internal sealed class FakeJiraApiClient : IJiraApiClient
         return Task.FromResult(new JiraIssueContext(
             issueKey,
             "Add retry handling to payment callback",
-            "The callback should retry transient failures and stop on terminal failures.",
-            "Retries must be idempotent.",
+            "The callback should retry transient failures and stop on terminal failures. See https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract.",
+            """
+            - Retries must be idempotent.
+            - Terminal failures must not be retried.
+            """,
             "Story",
             "High",
             comments,
@@ -153,7 +156,7 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
             new XrayTestSet(
                 "50001",
                 "QA-TS1",
-                "bank-otp-api - Callbacks Test Set"),
+                "SomeRepo - Callbacks Test Set"),
         ]);
 
     public Task<XrayTestCaseUpsertResult> UpsertTestCaseAsync(
@@ -179,16 +182,6 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
             true));
     }
 
-    public Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
-        XrayTestExecutionUploadRequest request,
-        CancellationToken ct)
-        => throw new NotImplementedException();
-
-    public Task AddTestsToTestPlanAsync(
-        XrayAssociationUpdateRequest request,
-        CancellationToken ct)
-        => throw new NotImplementedException();
-
     public Task AddTestsToTestSetAsync(
         XrayAssociationUpdateRequest request,
         CancellationToken ct)
@@ -197,19 +190,6 @@ internal sealed class FakeXrayApiClient : IXrayApiClient
 
 internal sealed class FakeScmClient : IScmClient
 {
-    private static readonly RepositoryConventions Conventions = new(
-        "bank-otp-api",
-        false,
-        "xUnit",
-        ".NET 10",
-        ["/tests", "/src/Tests"],
-        ["/tests", "/src/Tests"],
-        ["/src"],
-        ["dotnet build src/Manso.sln"],
-        ["dotnet test src/Manso.sln"],
-        ["dotnet format src/Manso.sln --verify-no-changes"],
-        "Tests.cs");
-
     public Task<RepositoryPullRequest> GetPullRequestAsync(
         RepositoryTarget repository,
         int pullRequestId,
@@ -257,7 +237,7 @@ internal sealed class FakeScmClient : IScmClient
 
         return Task.FromResult(new RepositoryContextBundle(
             target,
-            Conventions,
+            conventions,
             changes.Take(options.MaxChangedFiles).ToArray(),
             [
                 new NeighboringTestFile(
@@ -275,12 +255,33 @@ internal sealed class FakeScmClient : IScmClient
             Array.Empty<RunWarning>()));
     }
 
-    public Task<RepositoryWriteExecutionResult> WriteAsync(
+    public Task<IReadOnlyList<RepositoryGuidanceFile>> GetRepositoryFilesAsync(
         RepositoryTarget target,
-        RepositoryWritePlan plan,
+        IReadOnlyList<string> paths,
         CancellationToken ct)
-        => Task.FromResult(new RepositoryWriteExecutionResult(
-            plan.NewBranchName,
-            "fake-commit-id",
-            $"{target.RepositoryUrl.TrimEnd('/')}/pullrequest/999"));
+    {
+        IReadOnlyList<RepositoryGuidanceFile> files =
+        [
+            new(
+                RepositoryGuidancePaths.RepoConventions,
+                """
+                {
+                  "supportsExecutableTestGeneration": true,
+                  "testFramework": "xUnit",
+                  "targetFramework": ".NET 10",
+                  "testDirectoryRoots": ["/tests", "/src/Tests"],
+                  "allowedHelperDirectoryRoots": ["/tests", "/src/Tests"],
+                  "protectedPathPrefixes": ["/src/Callbacks"],
+                  "buildCommands": ["dotnet build src/Manso.sln"],
+                  "testCommands": ["dotnet test src/Manso.sln"],
+                  "formatterCommands": ["dotnet format src/Manso.sln --verify-no-changes"],
+                  "testFileSuffix": "Tests.cs"
+                }
+                """),
+        ];
+
+        return Task.FromResult<IReadOnlyList<RepositoryGuidanceFile>>(
+            files.Where(file => paths.Contains(file.Path, StringComparer.OrdinalIgnoreCase)).ToArray());
+    }
+
 }

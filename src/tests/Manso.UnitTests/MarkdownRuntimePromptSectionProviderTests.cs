@@ -38,13 +38,13 @@ public sealed class MarkdownRuntimePromptSectionProviderTests : IDisposable
             - Scenarios avoid duplicating the same idea with minor wording changes.
             """);
         File.WriteAllText(
-            Path.Combine(runtimeRoot, "executable-generation-guardrails.md"),
+            Path.Combine(runtimeRoot, "scenario-generation-guardrails.md"),
             """
             ## Runtime rules
 
             - Treat Jira development metadata as the only authoritative repository-context source for iteration 1.
             - Do not introduce manual branch or PR override as a competing runtime path.
-            - Keep scenario artifacts Gherkin-first even if executable matching later uses scenario ID or title.
+            - Keep scenario artifacts Gherkin-first for reviewability.
 
             ## Implementation stance
 
@@ -55,7 +55,7 @@ public sealed class MarkdownRuntimePromptSectionProviderTests : IDisposable
             new RuntimePromptOptions { RootPath = runtimeRoot },
             NullLogger<MarkdownRuntimePromptSectionProvider>.Instance);
 
-        var section = provider.BuildScenarioGenerationSection(CreateMetadata());
+        var section = provider.BuildScenarioGenerationSection(TestScope.Api, WorkflowPass.ScenarioDesign);
 
         Assert.Equal("runtime_guardrails", section.Key);
         Assert.Contains("Apply these runtime guardrails as operational policy", section.Content);
@@ -75,7 +75,7 @@ public sealed class MarkdownRuntimePromptSectionProviderTests : IDisposable
             new RuntimePromptOptions { RootPath = _tempRoot },
             NullLogger<MarkdownRuntimePromptSectionProvider>.Instance);
 
-        var section = provider.BuildScenarioGenerationSection(CreateMetadata());
+        var section = provider.BuildScenarioGenerationSection(TestScope.Api, WorkflowPass.ScenarioDesign);
 
         Assert.Contains("Be rigorous, skeptical, and exact.", section.Content);
         Assert.Contains("Do not introduce manual branch or PR override as a competing runtime path.", section.Content);
@@ -88,7 +88,7 @@ public sealed class MarkdownRuntimePromptSectionProviderTests : IDisposable
             new RuntimePromptOptions { RootPath = string.Empty },
             NullLogger<MarkdownRuntimePromptSectionProvider>.Instance);
 
-        var section = provider.BuildScenarioGenerationSection(CreateMetadata());
+        var section = provider.BuildScenarioGenerationSection(TestScope.Api, WorkflowPass.ScenarioDesign);
 
         Assert.Equal("runtime_guardrails", section.Key);
         Assert.False(string.IsNullOrWhiteSpace(section.Content));
@@ -101,15 +101,4 @@ public sealed class MarkdownRuntimePromptSectionProviderTests : IDisposable
             Directory.Delete(_tempRoot, recursive: true);
         }
     }
-
-    private static RunMetadataContext CreateMetadata()
-        => new(
-            "QA-1234",
-            GenerationMode.TestCasesOnly,
-            TestScope.Api,
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            "bank-otp-api",
-            "https://example.test/pr/1",
-            null);
 }

@@ -1,8 +1,8 @@
-using System.Threading.Channels;
 using Manso.Application;
 using Manso.Domain;
 using Manso.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Threading.Channels;
 
 namespace Manso.UnitTests;
 
@@ -18,17 +18,9 @@ public sealed class RunExecutionBackgroundServiceTests
             TestGenerationRun.Create(
                 "RUN-1",
                 new RawRunRequest(
-                    "jira-automation",
-                    "manual",
-                    new RawIssuePayload("RM-1", "1"),
-                    new RawTriggerInputs(
-                        GenerationMode.TestCasesOnly.ToString(),
-                        WorkflowPass.ScenarioDesign.ToString(),
-                        null,
-                        CoverageIntent.Regression.ToString(),
-                        OutputTarget.JiraComment.ToString(),
-                        false),
-                    new RawRequester(null, "Tester", null)),
+                    WorkflowPass.ScenarioDesign.ToString(),
+                    "RM-1",
+                    "tester"),
                 "corr-1",
                 createdAt),
             CancellationToken.None);

@@ -27,12 +27,13 @@ public sealed record TestGenerationRun(
     {
         EnsureRequired(runId, nameof(runId));
         ArgumentNullException.ThrowIfNull(rawRequest);
-        EnsureRequired(rawRequest.Issue.Key, $"{nameof(rawRequest)}.{nameof(rawRequest.Issue)}.{nameof(rawRequest.Issue.Key)}");
+        var issueKey = rawRequest.IssueKey ?? string.Empty;
+        EnsureRequired(issueKey, $"{nameof(rawRequest)}.{nameof(rawRequest.IssueKey)}");
         EnsureRequired(correlationId, nameof(correlationId));
 
         return new TestGenerationRun(
             runId,
-            rawRequest.Issue.Key,
+            issueKey,
             RunStatus.Queued,
             createdAtUtc,
             null,
@@ -290,7 +291,16 @@ public sealed record RunStageRecord(
     RunStageStatus Status,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset? CompletedAtUtc,
-    string? Details);
+    string? Details)
+{
+    public long? DurationMs
+        => CompletedAtUtc is null
+            ? null
+            : Math.Max(0, (long)(CompletedAtUtc.Value - StartedAtUtc).TotalMilliseconds);
+
+    public IReadOnlyDictionary<string, string> Metrics { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+}
 
 public sealed record RunWarning(
     string Code,

@@ -12,40 +12,30 @@ public sealed class RunStoreJsonSerializerTests
         var run = TestGenerationRun.Create(
                 "RUN-20260327-0001",
                 new RawRunRequest(
-                    "JiraAutomation",
-                    "Manual",
-                    new RawIssuePayload(
-                        "QA-1234",
-                        "10001"),
-                    new RawTriggerInputs(
-                        "ExecutableTests",
-                        "ScenarioDesign",
-                        "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
-                        "Regression",
-                        "Both"),
-                    new RawRequester(
-                        "abc-123",
-                        "Manuel Marcatili",
-                        "manuel@example.com")),
+                    "ScenarioDesign",
+                    "QA-1234",
+                    "abc-123"),
                 "corr-123",
                 DateTimeOffset.Parse("2026-03-27T10:15:52Z"))
             .WithNormalizedRequest(new NormalizedRunRequest(
                 "QA-1234",
-                GenerationMode.ExecutableTests,
                 WorkflowPass.ScenarioDesign,
                 TestScope.Api,
                 "payments-api",
-                ["https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow"],
-                CoverageIntent.Regression,
-                OutputTarget.Both,
-                new RequestedBy("abc-123", "Manuel Marcatili", "manuel@example.com"),
-                DocumentationMode.ExplicitOnly))
+                "abc-123"))
             .WithStage(new RunStageRecord(
                 RunStageName.RequestAccepted,
                 RunStageStatus.Succeeded,
                 DateTimeOffset.Parse("2026-03-27T10:15:52Z"),
                 DateTimeOffset.Parse("2026-03-27T10:15:52Z"),
-                "Accepted."))
+                "Accepted.")
+            {
+                Metrics = new Dictionary<string, string>
+                {
+                    ["providerRequestCount"] = "1",
+                    ["warningCount"] = "0",
+                },
+            })
             .AddStoredArtifact(new StoredArtifact(
                 "ScenarioJson",
                 "generated-scenarios.json",
@@ -61,9 +51,11 @@ public sealed class RunStoreJsonSerializerTests
         Assert.Equal(run.RunId, restored.RunId);
         Assert.Equal(run.IssueKey, restored.IssueKey);
         Assert.Equal(run.Status, restored.Status);
-        Assert.Equal(run.RawRequest.Issue.Key, restored.RawRequest.Issue.Key);
+        Assert.Equal(run.RawRequest.IssueKey, restored.RawRequest.IssueKey);
         Assert.Equal(run.NormalizedRequest?.RepositoryAlias, restored.NormalizedRequest?.RepositoryAlias);
-        Assert.Single(restored.Stages);
+        var restoredStage = Assert.Single(restored.Stages);
+        Assert.Equal(0, restoredStage.DurationMs);
+        Assert.Equal("1", restoredStage.Metrics["providerRequestCount"]);
         Assert.Single(restored.Warnings);
         Assert.Single(restored.Errors);
         Assert.Single(restored.StoredArtifacts);

@@ -12,15 +12,10 @@ public sealed class TestGenerationRunDomainTests
         var exception = Assert.Throws<InvalidOperationException>(() => run.WithNormalizedRequest(
             new NormalizedRunRequest(
                 "RM-999",
-                GenerationMode.TestCasesOnly,
                 WorkflowPass.ScenarioDesign,
                 TestScope.Api,
                 null,
-                [],
-                CoverageIntent.Regression,
-                OutputTarget.JiraComment,
-                new RequestedBy(null, "Tester", null),
-                DocumentationMode.ExplicitOnly)));
+                "tester")));
 
         Assert.Contains("does not match run issue key", exception.Message, StringComparison.Ordinal);
     }
@@ -74,15 +69,37 @@ public sealed class TestGenerationRunDomainTests
     }
 
     [Fact]
+    public void RunStageRecord_ExposesDurationAndMetrics()
+    {
+        var stage = new RunStageRecord(
+            RunStageName.ScenariosGenerated,
+            RunStageStatus.Succeeded,
+            DateTimeOffset.Parse("2026-03-31T10:05:00Z"),
+            DateTimeOffset.Parse("2026-03-31T10:05:02.250Z"),
+            "Generated scenarios.")
+        {
+            Metrics = new Dictionary<string, string>
+            {
+                ["scenarioCount"] = "2",
+                ["provider"] = "OpenAi",
+            },
+        };
+
+        Assert.Equal(2250, stage.DurationMs);
+        Assert.Equal("2", stage.Metrics["scenarioCount"]);
+        Assert.Equal("OpenAi", stage.Metrics["provider"]);
+    }
+
+    [Fact]
     public void WithRepositoryTarget_UsesEffectivePullRequestReferences()
     {
         var target = new RepositoryTarget(
             "repo",
             "AzureDevOps",
-            "afs-dev",
+            "SomeProject",
             "risk",
             "repo",
-            "https://dev.azure.com/afs-dev/risk/_git/repo",
+            "https://dev.azure.com/SomeProject/repo/_git/repo",
             "main",
             "feature/rm-1",
             "main",
@@ -94,8 +111,8 @@ public sealed class TestGenerationRunDomainTests
         {
             PullRequestReferences =
             [
-                "https://dev.azure.com/afs-dev/risk/_git/repo/pullrequest/1",
-                "https://dev.azure.com/afs-dev/risk/_git/repo/pullrequest/2",
+                "https://dev.azure.com/SomeProject/repo/_git/repo/pullrequest/1",
+                "https://dev.azure.com/SomeProject/repo/_git/repo/pullrequest/2",
             ],
         };
 
@@ -111,22 +128,22 @@ public sealed class TestGenerationRunDomainTests
         var target = new RepositoryTarget(
             "repo",
             "AzureDevOps",
-            "afs-dev",
+            "SomeProject",
             "risk",
             "repo",
-            "https://dev.azure.com/afs-dev/risk/_git/repo",
+            "https://dev.azure.com/SomeProject/repo/_git/repo",
             "main",
             "feature/rm-1",
             "main",
             42,
-            "https://dev.azure.com/afs-dev/risk/_git/repo/pullrequest/42",
+            "https://dev.azure.com/SomeProject/repo/_git/repo/pullrequest/42",
             null,
             null,
             "jira");
 
         Assert.True(target.HasPullRequestContext);
         Assert.Equal(42, target.PrimaryPullRequestId);
-        Assert.Equal("https://dev.azure.com/afs-dev/risk/_git/repo/pullrequest/42", target.PrimaryPullRequestReference);
+        Assert.Equal("https://dev.azure.com/SomeProject/repo/_git/repo/pullrequest/42", target.PrimaryPullRequestReference);
         Assert.Single(target.EffectivePullRequestIds);
         Assert.Single(target.EffectivePullRequestReferences);
     }
@@ -135,16 +152,9 @@ public sealed class TestGenerationRunDomainTests
         => TestGenerationRun.Create(
             "RUN-1",
             new RawRunRequest(
-                "jira-automation",
-                "manual",
-                new RawIssuePayload("RM-1", "1"),
-                new RawTriggerInputs(
-                    GenerationMode.TestCasesOnly.ToString(),
-                    WorkflowPass.ScenarioDesign.ToString(),
-                    null,
-                    CoverageIntent.Regression.ToString(),
-                    OutputTarget.JiraComment.ToString()),
-                new RawRequester(null, "Tester", null)),
+                WorkflowPass.ScenarioDesign.ToString(),
+                "RM-1",
+                "tester"),
             "corr-1",
             DateTimeOffset.Parse("2026-03-31T10:00:00Z"));
 }

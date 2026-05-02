@@ -1,11 +1,11 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
 using Manso.Application;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 
 namespace Manso.Infrastructure;
 
@@ -76,11 +76,6 @@ public sealed class XrayCloudApiClient : IXrayApiClient
             .ToArray();
     }
 
-    public Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
-        XrayTestExecutionUploadRequest request,
-        CancellationToken ct)
-        => throw new NotImplementedException("Xray execution upload will be implemented after test case sync.");
-
     public async Task<XrayTestSetCreateResult> CreateTestSetAsync(
         XrayTestSetCreateRequest request,
         CancellationToken ct)
@@ -123,16 +118,18 @@ public sealed class XrayCloudApiClient : IXrayApiClient
             true);
     }
 
-    public Task AddTestsToTestPlanAsync(
-        XrayAssociationUpdateRequest request,
-        CancellationToken ct)
-        => throw new NotImplementedException("Xray test plan updates will be implemented after test case sync.");
-
     public async Task AddTestsToTestSetAsync(
         XrayAssociationUpdateRequest request,
         CancellationToken ct)
     {
-        await SendGraphQlAsync(
+        var containerIssueId = RequireIssueId(request.ContainerIssueId, "Xray test set association requires a test set issue id.");
+        var testIssueIds = NormalizeIssueIds(request.TestIssueIds);
+        if (testIssueIds.Count == 0)
+        {
+            throw new InvalidOperationException("Xray test set association requires at least one test issue id.");
+        }
+
+        using var _ = await SendGraphQlAsync(
             """
             mutation AddTestsToTestSet($issueId: String!, $testIssueIds: [String]!) {
               addTestsToTestSet(issueId: $issueId, testIssueIds: $testIssueIds) {
@@ -143,8 +140,8 @@ public sealed class XrayCloudApiClient : IXrayApiClient
             """,
             new
             {
-                issueId = request.ContainerIssueId,
-                testIssueIds = request.TestIssueIds,
+                issueId = containerIssueId,
+                testIssueIds,
             },
             ct);
     }
@@ -681,9 +678,29 @@ public sealed class XrayCloudApiClient : IXrayApiClient
             : string.Empty;
     }
 
+    private static string RequireIssueId(string issueId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(issueId))
+        {
+            throw new InvalidOperationException(message);
+        }
+
+        return issueId.Trim();
+    }
+
+    private static IReadOnlyList<string> NormalizeIssueIds(IEnumerable<string>? issueIds)
+        => issueIds is null
+            ? Array.Empty<string>()
+            : issueIds
+                .Where(issueId => !string.IsNullOrWhiteSpace(issueId))
+                .Select(issueId => issueId.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
     private sealed record ExistingXrayTestStep(
         string Id,
         string Action,
         string? Data,
         string? Result);
+
 }

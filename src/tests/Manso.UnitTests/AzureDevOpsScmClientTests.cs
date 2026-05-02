@@ -1,18 +1,17 @@
-using System.Net;
-using System.Text;
-using System.Text.Json;
 using Manso.Application;
 using Manso.Domain;
 using Manso.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Text;
 
 namespace Manso.UnitTests;
 
 public sealed class AzureDevOpsScmClientTests
 {
     [Fact]
-    public async Task GetCodeContextAsync_AggregatesMergedPullRequestDiffs_ForAutomationImplementation()
+    public async Task GetCodeContextAsync_AggregatesPullRequestDiffs()
     {
         var client = new AzureDevOpsScmClient(
             new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler())),
@@ -25,12 +24,12 @@ public sealed class AzureDevOpsScmClientTests
             NullLogger<AzureDevOpsScmClient>.Instance);
 
         var target = new RepositoryTarget(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             null,
             "main",
@@ -38,13 +37,13 @@ public sealed class AzureDevOpsScmClientTests
             null,
             null,
             null,
-            "jira_development_merged_pull_request_aggregate")
+            "jira_development_pull_request_aggregate")
         {
             PullRequestIds = [881, 882],
             PullRequestReferences =
             [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/881",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             ],
         };
 
@@ -64,6 +63,7 @@ public sealed class AzureDevOpsScmClientTests
         Assert.Contains("pullrequest/881", change.DiffPreview);
         Assert.Contains("pullrequest/882", change.DiffPreview);
         Assert.Empty(result.NeighboringTests);
+        Assert.True(result.ProviderRequestCount > 0);
     }
 
     [Fact]
@@ -80,17 +80,17 @@ public sealed class AzureDevOpsScmClientTests
             NullLogger<AzureDevOpsScmClient>.Instance);
 
         var target = new RepositoryTarget(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             "feature/folder-skip",
             "main",
             883,
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/883",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/883",
             "source-sha-folder",
             "target-sha-folder",
             "jira_development_pull_request");
@@ -107,7 +107,7 @@ public sealed class AzureDevOpsScmClientTests
             CancellationToken.None);
 
         var change = Assert.Single(result.ChangedFiles);
-        Assert.Equal("/src/Tests/Risk.Bank.Otp.FunctionalTests/RetryFlowTests.cs", change.Path);
+        Assert.Equal("/src/Tests/Application.FunctionalTests/RetryFlowTests.cs", change.Path);
         Assert.DoesNotContain(result.Warnings, warning => warning.Code == "folder_change_skipped");
         Assert.DoesNotContain(result.Warnings, warning => warning.Code == "changed_files_truncated");
     }
@@ -126,17 +126,17 @@ public sealed class AzureDevOpsScmClientTests
             NullLogger<AzureDevOpsScmClient>.Instance);
 
         var target = new RepositoryTarget(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             "feature/qa-1234",
             "main",
             882,
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             "source-sha",
             "target-sha",
             "jira_development_pull_request");
@@ -153,7 +153,7 @@ public sealed class AzureDevOpsScmClientTests
             CreateConventions(),
             CancellationToken.None);
 
-        Assert.Contains(result.NeighboringTests, test => test.Path == "/src/Tests/Risk.Bank.Otp.FunctionalTests/RetryFlowTests.cs");
+        Assert.Contains(result.NeighboringTests, test => test.Path == "/src/Tests/Application.FunctionalTests/RetryFlowTests.cs");
     }
 
     [Fact]
@@ -170,17 +170,17 @@ public sealed class AzureDevOpsScmClientTests
             NullLogger<AzureDevOpsScmClient>.Instance);
 
         var target = new RepositoryTarget(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             "feature/settings-redaction",
             "main",
             884,
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/884",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/884",
             "source-sha-settings",
             "target-sha-settings",
             "jira_development_pull_request");
@@ -205,81 +205,53 @@ public sealed class AzureDevOpsScmClientTests
     }
 
     [Fact]
-    public async Task WriteAsync_CreatesBranchPushAndDraftPullRequest()
+    public async Task GetRepositoryFilesAsync_FetchesOnlyExistingRequestedFiles()
     {
-        var handler = new StubHttpMessageHandler();
         var client = new AzureDevOpsScmClient(
-            new StubHttpClientFactory(new HttpClient(handler)),
+            new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler())),
             Options.Create(new ScmOptions
             {
                 Provider = "AzureDevOps",
                 BaseUrl = "https://dev.azure.com/",
-                ReadToken = "read-token",
-                WriteToken = "write-token",
+                ReadToken = "test-token",
             }),
             NullLogger<AzureDevOpsScmClient>.Instance);
 
         var target = new RepositoryTarget(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             "feature/qa-1234",
             "main",
             882,
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             "source-sha",
             "target-sha",
             "jira_development_pull_request");
 
-        var result = await client.WriteAsync(
+        var files = await client.GetRepositoryFilesAsync(
             target,
-            new RepositoryWritePlan(
-                "bank-otp-api",
-                "main",
-                "ai-testgen/QA-1234/retry-flow-tests",
-                "test(ai): generate tests for QA-1234",
-                [
-                    new GeneratedFile(
-                        "/tests/Callbacks/RetryHandlerTests.cs",
-                        "public sealed class RetryHandlerTests { }",
-                        GeneratedFileAction.Create),
-                ],
-                "[AI TestGen] QA-1234 - generated test updates",
-                "AI-generated review content",
-                true),
+            [
+                RepositoryGuidancePaths.TestArchitecture,
+                RepositoryGuidancePaths.RepoConventions,
+                "/docs/testing/missing.md",
+            ],
             CancellationToken.None);
 
-        Assert.Equal("ai-testgen/QA-1234/retry-flow-tests", result.BranchName);
-        Assert.Equal("generated-commit-sha", result.CommitId);
-        Assert.Equal("https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/999", result.PullRequestUrl);
-
-        Assert.NotNull(handler.LastPushRequestBody);
-        using var pushJson = JsonDocument.Parse(handler.LastPushRequestBody!);
-        Assert.Equal(
-            "refs/heads/ai-testgen/QA-1234/retry-flow-tests",
-            pushJson.RootElement.GetProperty("refUpdates")[0].GetProperty("name").GetString());
-        Assert.Equal(
-            "main-head-sha",
-            pushJson.RootElement.GetProperty("refUpdates")[0].GetProperty("oldObjectId").GetString());
-
-        Assert.NotNull(handler.LastPullRequestBody);
-        using var pullRequestJson = JsonDocument.Parse(handler.LastPullRequestBody!);
-        Assert.True(pullRequestJson.RootElement.GetProperty("isDraft").GetBoolean());
-        Assert.Equal(
-            "refs/heads/ai-testgen/QA-1234/retry-flow-tests",
-            pullRequestJson.RootElement.GetProperty("sourceRefName").GetString());
-        Assert.Equal(
-            "refs/heads/main",
-            pullRequestJson.RootElement.GetProperty("targetRefName").GetString());
+        Assert.Equal(2, files.Count);
+        Assert.Contains(files, file => file.Path == RepositoryGuidancePaths.TestArchitecture);
+        Assert.Contains(files, file => file.Path == RepositoryGuidancePaths.RepoConventions);
+        Assert.Contains("fixture-per-feature", files.Single(file => file.Path == RepositoryGuidancePaths.TestArchitecture).Content);
+        Assert.Contains("supportsExecutableTestGeneration", files.Single(file => file.Path == RepositoryGuidancePaths.RepoConventions).Content);
     }
 
     private static RepositoryConventions CreateConventions()
         => new(
-            "bank-otp-api",
+            "SomeRepo",
             false,
             "xUnit",
             ".NET 10",
@@ -306,58 +278,12 @@ public sealed class AzureDevOpsScmClientTests
 
     private sealed class StubHttpMessageHandler : HttpMessageHandler
     {
-        public string? LastPushRequestBody { get; private set; }
-
-        public string? LastPullRequestBody { get; private set; }
-
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var pathAndQuery = request.RequestUri?.PathAndQuery ?? string.Empty;
-            var requestBody = request.Content is null
-                ? null
-                : request.Content.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
-
-            if (pathAndQuery.Contains("/pushes?", StringComparison.OrdinalIgnoreCase))
-            {
-                LastPushRequestBody = requestBody;
-            }
-
-            if (pathAndQuery.Contains("/pullrequests?", StringComparison.OrdinalIgnoreCase))
-            {
-                LastPullRequestBody = requestBody;
-            }
 
             return Task.FromResult(pathAndQuery switch
             {
-                var value when value.Contains("/refs?", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("filter=heads%2Fmain", StringComparison.OrdinalIgnoreCase)
-                    => Json("""
-                        {
-                          "value": [
-                            {
-                              "name": "refs/heads/main",
-                              "objectId": "main-head-sha"
-                            }
-                          ]
-                        }
-                        """),
-                var value when value.Contains("/pushes?", StringComparison.OrdinalIgnoreCase)
-                    => Json("""
-                        {
-                          "commits": [
-                            {
-                              "commitId": "generated-commit-sha"
-                            }
-                          ]
-                        }
-                        """),
-                var value when value.Contains("/pullrequests?", StringComparison.OrdinalIgnoreCase)
-                    => Json("""
-                        {
-                          "pullRequestId": 999,
-                          "url": "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/999"
-                        }
-                        """),
                 var value when value.Contains("/pullRequests/881?", StringComparison.OrdinalIgnoreCase)
                     => Json("""
                         {
@@ -438,7 +364,7 @@ public sealed class AzureDevOpsScmClientTests
                             {
                               "changeType": "add",
                               "item": {
-                                "path": "/src/Tests/Risk.Bank.Otp.FunctionalTests",
+                                "path": "/src/Tests/Application.FunctionalTests",
                                 "isFolder": true
                               }
                             }
@@ -455,7 +381,7 @@ public sealed class AzureDevOpsScmClientTests
                             {
                               "changeType": "add",
                               "item": {
-                                "path": "/src/Tests/Risk.Bank.Otp.FunctionalTests/RetryFlowTests.cs"
+                                "path": "/src/Tests/Application.FunctionalTests/RetryFlowTests.cs"
                               }
                             }
                           ]
@@ -504,13 +430,26 @@ public sealed class AzureDevOpsScmClientTests
                                 value.Contains("versionDescriptor.version=source-sha-2", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "SaveResult(); return true;" }"""),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("path=%2Fsrc%2FTests%2FRisk.Bank.Otp.FunctionalTests%2FRetryFlowTests.cs", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2Fsrc%2FTests%2FApplication.FunctionalTests%2FRetryFlowTests.cs", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("versionDescriptor.version=source-sha-folder", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "public class RetryFlowTests { }" }"""),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("path=%2Fsrc%2FPayments%2FRetryHandler.cs", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("versionDescriptor.version=source-sha&", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "return true;" }"""),
+                var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2Farchitecture%2Ftest-architecture.md", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("versionDescriptor.version=source-sha&", StringComparison.OrdinalIgnoreCase)
+                    => Json("""{ "content": "Use fixture-per-feature tests." }"""),
+                var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2F.manso%2Frepo-conventions.json", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("versionDescriptor.version=source-sha&", StringComparison.OrdinalIgnoreCase)
+                    => Json(
+                        """
+                        {
+                          "content": "{ \"supportsExecutableTestGeneration\": true }"
+                        }
+                        """),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("path=%2Fsrc%2FPayments%2FRetryHandler.cs", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("versionDescriptor.version=target-sha&", StringComparison.OrdinalIgnoreCase)
@@ -537,14 +476,14 @@ public sealed class AzureDevOpsScmClientTests
                         {
                           "value": [
                             {
-                              "path": "/src/Tests/Risk.Bank.Otp.FunctionalTests/RetryFlowTests.cs",
+                              "path": "/src/Tests/Application.FunctionalTests/RetryFlowTests.cs",
                               "isFolder": false
                             }
                           ]
                         }
                         """),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&
-                                value.Contains("path=%2Fsrc%2FTests%2FRisk.Bank.Otp.FunctionalTests%2FRetryFlowTests.cs", StringComparison.OrdinalIgnoreCase) &&
+                                value.Contains("path=%2Fsrc%2FTests%2FApplication.FunctionalTests%2FRetryFlowTests.cs", StringComparison.OrdinalIgnoreCase) &&
                                 value.Contains("versionDescriptor.version=source-sha", StringComparison.OrdinalIgnoreCase)
                     => Json("""{ "content": "public class RetryFlowTests { [Fact] public void Existing() { } }" }"""),
                 var value when value.Contains("/items?", StringComparison.OrdinalIgnoreCase) &&

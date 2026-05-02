@@ -46,6 +46,49 @@ public sealed class ScenarioGeneratorTests
     }
 
     [Fact]
+    public async Task GenerateAsync_PropagatesLlmUsageMetrics()
+    {
+        var generator = new ScenarioGenerator(
+            new StubLlmGateway(
+                """
+                {
+                  "scenarios": [
+                    {
+                      "scenarioId": "SCN-001",
+                      "title": "Retries transient callback failures",
+                      "priority": "High",
+                      "suggestedLevel": "Api",
+                      "sourceAcceptanceCriteriaRefs": ["AC-1"],
+                      "riskRationale": "Retry logic changed and failure handling is critical.",
+                      "preconditions": ["A callback exists"],
+                      "gherkin": "Scenario: Retry transient callback failure",
+                      "expectedOutcome": "The callback is retried and succeeds.",
+                      "duplicateAssessment": "Net-new after comparison against the existing coverage index; no overlap found.",
+                      "existingXrayIssueKey": null
+                    }
+                  ]
+                }
+                """,
+                new LlmUsageMetrics(100, 25, 125, 5),
+                providerRequestCount: 2),
+            new ScenarioGenerationOptions
+            {
+                MinScenarios = 1,
+                MaxScenarios = 4,
+            },
+            NullLogger<ScenarioGenerator>.Instance);
+
+        var result = await generator.GenerateAsync(CreateBundle(), CancellationToken.None);
+
+        Assert.Equal(2, result.ProviderRequestCount);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(100, result.Usage.InputTokens);
+        Assert.Equal(25, result.Usage.OutputTokens);
+        Assert.Equal(125, result.Usage.TotalTokens);
+        Assert.Equal(5, result.Usage.ReasoningTokens);
+    }
+
+    [Fact]
     public async Task GenerateAsync_Throws_WhenSuggestedLevelDoesNotMatchRequestedScope()
     {
         var generator = new ScenarioGenerator(
@@ -268,15 +311,9 @@ public sealed class ScenarioGeneratorTests
 
     private static GenerationContextBundle CreateBundle()
         => new(
-            new RunMetadataContext(
-                "QA-1234",
-                GenerationMode.TestCasesOnly,
-                TestScope.Api,
-                CoverageIntent.Regression,
-                OutputTarget.JiraComment,
-                "bank-otp-api",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
-                null),
+            "QA-1234",
+            TestScope.Api,
+            WorkflowPass.ScenarioDesign,
             [
                 new GenerationContextSection("run_metadata", "RUN METADATA", "Requested scope: Api"),
                 new GenerationContextSection("jira_issue", "JIRA ISSUE", "Summary: Retry callback"),
@@ -306,16 +343,27 @@ public sealed class ScenarioGeneratorTests
     private sealed class StubLlmGateway : ILlmGateway
     {
         private readonly string _json;
+        private readonly LlmUsageMetrics? _usage;
+        private readonly int _providerRequestCount;
 
-        public StubLlmGateway(string json)
+        public StubLlmGateway(
+            string json,
+            LlmUsageMetrics? usage = null,
+            int providerRequestCount = 0)
         {
             _json = json;
+            _usage = usage;
+            _providerRequestCount = providerRequestCount;
         }
 
         public Task<LlmCompletionResult> CompleteJsonAsync(
             LlmPromptRequest request,
             CancellationToken ct)
-            => Task.FromResult(new LlmCompletionResult("Mock", "mock-model", _json));
+            => Task.FromResult(new LlmCompletionResult("Mock", "mock-model", _json)
+            {
+                Usage = _usage,
+                ProviderRequestCount = _providerRequestCount,
+            });
     }
 
     private sealed class CapturingLlmGateway : ILlmGateway

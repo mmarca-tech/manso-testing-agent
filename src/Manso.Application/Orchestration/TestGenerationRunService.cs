@@ -1,5 +1,6 @@
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -7,6 +8,8 @@ namespace Manso.Application;
 
 public sealed class TestGenerationRunService : ITestGenerationRunService
 {
+    private const int MaxRunIdCreateAttempts = 25;
+
     private static readonly JsonSerializerOptions ArtifactJsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -83,34 +86,68 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         CancellationToken ct)
     {
         ValidateIntakeRequest(request);
-        await _requestNormalizer.NormalizeAsync(request, ct);
+        var normalizedRequest = await _requestNormalizer.NormalizeAsync(request, ct);
+        var existingActiveRun = await _runStore.FindActiveAsync(
+            normalizedRequest.IssueKey,
+            normalizedRequest.WorkflowPass,
+            normalizedRequest.RepositoryAlias,
+            ct);
+        if (existingActiveRun is not null)
+        {
+            throw new RequestValidationException(
+                $"Active run '{existingActiveRun.RunId}' already exists for issue '{normalizedRequest.IssueKey}', workflow pass '{normalizedRequest.WorkflowPass}', and repository '{normalizedRequest.RepositoryAlias ?? "(none)"}'.",
+                "issueKey",
+                normalizedRequest.IssueKey);
+        }
 
-        var acceptedAtUtc = _timeProvider.GetUtcNow();
-        var run = TestGenerationRun.Create(
-                _runIdFactory.Create(),
-                request,
-                correlationId,
-                acceptedAtUtc)
-            .WithStage(new RunStageRecord(
-                RunStageName.RequestAccepted,
-                RunStageStatus.Succeeded,
+        for (var attempt = 1; attempt <= MaxRunIdCreateAttempts; attempt++)
+        {
+            var acceptedAtUtc = _timeProvider.GetUtcNow();
+            var run = TestGenerationRun.Create(
+                    _runIdFactory.Create(),
+                    request,
+                    correlationId,
+                    acceptedAtUtc)
+                .WithNormalizedRequest(normalizedRequest)
+                .WithStage(CreateStageRecord(
+                    RunStageName.RequestAccepted,
+                    RunStageStatus.Succeeded,
+                    acceptedAtUtc,
+                    acceptedAtUtc,
+                    "Webhook request accepted and queued.",
+                    Metrics(
+                        ("workflowPass", normalizedRequest.WorkflowPass))));
+
+            try
+            {
+                await _runStore.CreateAsync(run, ct);
+            }
+            catch (RunAlreadyExistsException ex) when (attempt < MaxRunIdCreateAttempts)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Generated duplicate run id {RunId} on attempt {Attempt}; retrying with a new id.",
+                    ex.RunId,
+                    attempt);
+                continue;
+            }
+
+            await _backgroundRunQueue.QueueAsync(run.RunId, ct);
+
+            _logger.LogInformation(
+                "Accepted test generation run {RunId} for issue {IssueKey}.",
+                run.RunId,
+                run.IssueKey);
+
+            return new RunAcceptedResponse(
+                run.RunId,
+                run.Status,
                 acceptedAtUtc,
-                acceptedAtUtc,
-                "Webhook request accepted and queued."));
+                correlationId);
+        }
 
-        await _runStore.CreateAsync(run, ct);
-        await _backgroundRunQueue.QueueAsync(run.RunId, ct);
-
-        _logger.LogInformation(
-            "Accepted test generation run {RunId} for issue {IssueKey}.",
-            run.RunId,
-            run.IssueKey);
-
-        return new RunAcceptedResponse(
-            run.RunId,
-            run.Status,
-            acceptedAtUtc,
-            correlationId);
+        throw new InvalidOperationException(
+            $"Unable to allocate a unique run id after {MaxRunIdCreateAttempts} attempts.");
     }
 
     public async Task ExecuteAsync(string runId, CancellationToken ct)
@@ -140,24 +177,20 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
 
         try
         {
-            var normalization = await _requestNormalizer.NormalizeAsync(run.RawRequest, ct);
-            var effectiveRequest = normalization.Request;
+            var normalizedRequest = await _requestNormalizer.NormalizeAsync(run.RawRequest, ct);
+            var effectiveRequest = normalizedRequest;
             await CompleteStageAsync(
                 runId,
                 RunStageName.RequestNormalized,
                 startedAtUtc,
                 "Request normalization completed.",
                 ct,
-                current =>
-                {
-                    var updated = current.WithNormalizedRequest(effectiveRequest);
-                    if (normalization.Warnings.Count > 0)
-                    {
-                        updated = updated.AddWarnings(normalization.Warnings);
-                    }
-
-                    return updated.MarkRunning(current.StartedAtUtc ?? startedAtUtc);
-                });
+                current => current
+                    .WithNormalizedRequest(effectiveRequest)
+                    .MarkRunning(current.StartedAtUtc ?? startedAtUtc),
+                Metrics(
+                    ("workflowPass", effectiveRequest.WorkflowPass),
+                    ("testScope", effectiveRequest.TestScope)));
 
             _logger.LogInformation("Completed normalization stage for run {RunId}.", runId);
 
@@ -172,7 +205,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
             JiraIssueContext jiraContext;
             try
             {
-                jiraContext = await _jiraContextService.BuildAsync(normalization.Request, ct);
+                jiraContext = await _jiraContextService.BuildAsync(effectiveRequest, ct);
             }
             catch (Exception ex)
             {
@@ -194,20 +227,29 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                 jiraStartedAtUtc,
                 $"Fetched Jira issue context with {jiraContext.Comments.Count} selected comments.",
                 ct,
-                current => current);
+                current => current,
+                Metrics(
+                    ("provider", "Jira"),
+                    ("providerRequestCount", 1 + jiraContext.DescriptionReferencedIssues.Count),
+                    ("commentCount", jiraContext.Comments.Count),
+                    ("linkedIssueCount", jiraContext.LinkedIssues.Count),
+                    ("descriptionReferencedIssueCount", jiraContext.DescriptionReferencedIssues.Count),
+                    ("labelCount", jiraContext.Labels.Count),
+                    ("developmentRepositoryCount", jiraContext.DevelopmentRepositories.Count),
+                    ("hasAcceptanceCriteria", !string.IsNullOrWhiteSpace(jiraContext.AcceptanceCriteria))));
 
             var docsStartedAtUtc = _timeProvider.GetUtcNow();
             await StartStageAsync(
                 runId,
                 RunStageName.ConfluenceResolved,
                 docsStartedAtUtc,
-                "Resolving explicit Confluence links.",
+                "Resolving explicit Confluence links from Jira issue context.",
                 ct);
 
             DocumentationResolutionResult documentationResult;
             try
             {
-                documentationResult = await _documentationResolver.ResolveAsync(jiraContext, normalization.Request, ct);
+                documentationResult = await _documentationResolver.ResolveAsync(jiraContext, ct);
             }
             catch (Exception ex)
             {
@@ -236,7 +278,12 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                         : current;
 
                     return updated.MarkRunning(current.StartedAtUtc ?? startedAtUtc);
-                });
+                },
+                Metrics(
+                    ("provider", "Confluence"),
+                    ("providerRequestCount", documentationResult.ProviderRequestCount),
+                    ("documentCount", documentationResult.Documents.Count),
+                    ("warningCount", documentationResult.Warnings.Count)));
 
             var repositoryStartedAtUtc = _timeProvider.GetUtcNow();
             await StartStageAsync(
@@ -250,7 +297,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
             RepositoryContextBundle? repositoryContext = null;
             try
             {
-                repositoryTarget = await _repositoryResolver.ResolveAsync(jiraContext, normalization.Request, ct);
+                repositoryTarget = await _repositoryResolver.ResolveAsync(jiraContext, effectiveRequest, ct);
             }
             catch (RepositoryContextUnavailableException ex)
             {
@@ -268,13 +315,17 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     ct,
                     current => current.AddWarning(new RunWarning(
                         "repository_context_unavailable",
-                        ex.Message)));
+                        ex.Message)),
+                    Metrics(
+                        ("repositoryAvailable", false),
+                        ("warningCode", "repository_context_unavailable")));
                 await SkipStageAsync(
                     runId,
                     RunStageName.CodeContextCollected,
                     repositorySkippedAtUtc,
                     "Skipped because no repository PR or branch context was available.",
-                    ct);
+                    ct,
+                    metrics: Metrics(("repositoryAvailable", false)));
             }
             catch (Exception ex)
             {
@@ -298,7 +349,15 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     repositoryStartedAtUtc,
                     DescribeRepositoryResolution(repositoryTarget),
                     ct,
-                    current => current.WithRepositoryTarget(repositoryTarget));
+                    current => current.WithRepositoryTarget(repositoryTarget),
+                    Metrics(
+                        ("provider", repositoryTarget.Provider),
+                        ("repositoryAlias", repositoryTarget.Alias),
+                        ("repositoryName", repositoryTarget.RepositoryName),
+                        ("pullRequestCount", repositoryTarget.EffectivePullRequestIds.Count),
+                        ("hasPullRequestContext", repositoryTarget.HasPullRequestContext),
+                        ("hasSourceCommit", !string.IsNullOrWhiteSpace(repositoryTarget.SourceCommitSha)),
+                        ("hasTargetCommit", !string.IsNullOrWhiteSpace(repositoryTarget.TargetCommitSha))));
 
                 var codeContextStartedAtUtc = _timeProvider.GetUtcNow();
                 await StartStageAsync(
@@ -310,7 +369,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
 
                 try
                 {
-                    repositoryContext = await _repositoryContextService.BuildAsync(repositoryTarget, normalization.Request, ct);
+                    repositoryContext = await _repositoryContextService.BuildAsync(repositoryTarget, effectiveRequest, ct);
                 }
                 catch (Exception ex)
                 {
@@ -334,11 +393,21 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     ct,
                     current => repositoryContext.Warnings.Count > 0
                         ? current.AddWarnings(repositoryContext.Warnings)
-                        : current);
+                        : current,
+                    Metrics(
+                        ("provider", repositoryTarget.Provider),
+                        ("providerRequestCount", repositoryContext.ProviderRequestCount),
+                        ("changedFileCount", repositoryContext.ChangedFiles.Count),
+                        ("changedTestFileCount", repositoryContext.ChangedFiles.Count(change => change.IsTestFile)),
+                        ("neighboringTestFileCount", repositoryContext.NeighboringTests.Count),
+                        ("guidanceFileCount", repositoryContext.GuidanceFiles.Count),
+                        ("supportsExecutableTestGeneration", repositoryContext.Conventions.SupportsExecutableTestGeneration),
+                        ("combinedDiffChars", repositoryContext.CombinedDiff.Length),
+                        ("warningCount", repositoryContext.Warnings.Count)));
             }
 
             effectiveRequest = ApplyRuntimeInferences(effectiveRequest, repositoryTarget, repositoryContext);
-            if (!ReferenceEquals(effectiveRequest, normalization.Request))
+            if (effectiveRequest != normalizedRequest)
             {
                 await _runStore.UpdateAsync(
                     runId,
@@ -355,14 +424,14 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                 ct);
 
             XrayContextBundle xrayContext;
-                try
-                {
-                    xrayContext = await _xrayContextService.BuildAsync(
-                        effectiveRequest,
-                        jiraContext,
-                        repositoryTarget,
-                        repositoryContext,
-                    ct);
+            try
+            {
+                xrayContext = await _xrayContextService.BuildAsync(
+                    effectiveRequest,
+                    jiraContext,
+                    repositoryTarget,
+                    repositoryContext,
+                ct);
             }
             catch (Exception ex)
             {
@@ -384,7 +453,12 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                 xrayStartedAtUtc,
                 $"Collected {xrayContext.NeighboringTests.Count} linked and neighboring Xray test(s).",
                 ct,
-                current => current.AddWarnings(xrayContext.Warnings));
+                current => current.AddWarnings(xrayContext.Warnings),
+                Metrics(
+                    ("provider", "Xray"),
+                    ("providerRequestCount", xrayContext.ProviderRequestCount),
+                    ("neighboringTestCount", xrayContext.NeighboringTests.Count),
+                    ("warningCount", xrayContext.Warnings.Count)));
 
             var contextBundleStartedAtUtc = _timeProvider.GetUtcNow();
             await StartStageAsync(
@@ -437,42 +511,17 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                         .AddStoredArtifact(BuildContextBundleArtifact(runId, contextBundle))
                         .AddStoredArtifact(BuildPromptArtifact(runId, promptPreview))
                         .MarkRunning(current.StartedAtUtc ?? startedAtUtc);
-                });
-
-            if (effectiveRequest.DryRun)
-            {
-                var dryRunCompletedAtUtc = _timeProvider.GetUtcNow();
-                await _runStore.UpdateAsync(
-                    runId,
-                    current => current
-                        .WithStage(new RunStageRecord(
-                            RunStageName.ScenariosGenerated,
-                            RunStageStatus.Skipped,
-                            dryRunCompletedAtUtc,
-                            dryRunCompletedAtUtc,
-                            "Dry run enabled; the generation context bundle and final LLM prompt were stored without sending a request to the LLM."))
-                        .WithStage(new RunStageRecord(
-                            RunStageName.TestsGenerated,
-                            RunStageStatus.Skipped,
-                            dryRunCompletedAtUtc,
-                            dryRunCompletedAtUtc,
-                            "Skipped because dry run mode does not generate or synchronize test cases."))
-                        .WithStage(new RunStageRecord(
-                            RunStageName.OutputsValidated,
-                            RunStageStatus.Skipped,
-                            dryRunCompletedAtUtc,
-                            dryRunCompletedAtUtc,
-                            "Skipped because dry run mode does not produce generated scenarios to validate."))
-                        .WithStage(new RunStageRecord(
-                            RunStageName.OutputsWritten,
-                            RunStageStatus.Skipped,
-                            dryRunCompletedAtUtc,
-                            dryRunCompletedAtUtc,
-                            "Skipped because dry run mode only stores preview artifacts."))
-                        .MarkCompleted(RunStatus.Succeeded, dryRunCompletedAtUtc),
-                    ct);
-                return;
-            }
+                },
+                Metrics(
+                    ("sectionCount", contextBundle.Sections.Count),
+                    ("documentationDocumentCount", contextBundle.DocumentationDocumentCount),
+                    ("changedFileCount", contextBundle.ChangedFileCount),
+                    ("neighboringRepoTestFileCount", contextBundle.NeighboringTestCount),
+                    ("xrayNeighboringTestCount", contextBundle.XrayNeighboringTestCount),
+                    ("warningCount", contextBundle.Warnings.Count),
+                    ("systemPromptChars", promptPreview.SystemPrompt.Length),
+                    ("userPromptChars", promptPreview.UserPrompt.Length),
+                    ("promptTotalChars", promptPreview.SystemPrompt.Length + promptPreview.UserPrompt.Length)));
 
             var scenariosStartedAtUtc = _timeProvider.GetUtcNow();
             await StartStageAsync(
@@ -511,7 +560,17 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     runId,
                     "ScenarioJson",
                     "generated-scenarios.json",
-                    scenarioBundle.RawJson)));
+                    scenarioBundle.RawJson)),
+                Metrics(
+                    ("provider", scenarioBundle.ModelProvider),
+                    ("model", scenarioBundle.ModelName),
+                    ("providerRequestCount", scenarioBundle.ProviderRequestCount),
+                    ("scenarioCount", scenarioBundle.Scenarios.Count),
+                    ("rawJsonChars", scenarioBundle.RawJson.Length),
+                    ("inputTokens", scenarioBundle.Usage?.InputTokens),
+                    ("outputTokens", scenarioBundle.Usage?.OutputTokens),
+                    ("totalTokens", scenarioBundle.Usage?.TotalTokens),
+                    ("reasoningTokens", scenarioBundle.Usage?.ReasoningTokens)));
 
             var validationStartedAtUtc = _timeProvider.GetUtcNow();
             await StartStageAsync(
@@ -524,7 +583,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
             ValidationResult validationResult;
             try
             {
-                validationResult = await _outputValidator.ValidateAsync(contextBundle, scenarioBundle, null, ct);
+                validationResult = await _outputValidator.ValidateAsync(contextBundle, scenarioBundle, ct);
             }
             catch (Exception ex)
             {
@@ -547,7 +606,12 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                 validationStartedAtUtc,
                 $"Validation completed with outcome {validationResult.Outcome} and {validationResult.Messages.Count} message(s).",
                 ct,
-                current => ApplyValidationResult(current, runId, validationResult, validationJson));
+                current => ApplyValidationResult(current, runId, validationResult, validationJson),
+                Metrics(
+                    ("outcome", validationResult.Outcome),
+                    ("messageCount", validationResult.Messages.Count),
+                    ("warningCount", validationResult.Messages.Count(IsWarning)),
+                    ("errorCount", validationResult.Messages.Count(IsError))));
 
             if (ShouldAutoSyncXrayScenarioTests(effectiveRequest, validationResult, _xrayOptions))
             {
@@ -596,7 +660,15 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                             "XraySyncResultJson",
                             "xray-sync-result.json",
                             JsonSerializer.Serialize(xraySyncResult)))
-                        .AddWarnings(xraySyncResult.Warnings));
+                        .AddWarnings(xraySyncResult.Warnings),
+                    Metrics(
+                        ("provider", "Xray"),
+                        ("providerRequestCount", xraySyncResult.ProviderRequestCount),
+                        ("scenarioCount", scenarioBundle.Scenarios.Count),
+                        ("createdCount", xraySyncResult.Items.Count(item => item.Action == "Created")),
+                        ("updatedCount", xraySyncResult.Items.Count(item => item.Action == "Updated")),
+                        ("ambiguousMatchCount", xraySyncResult.Items.Count(item => item.Action == "AmbiguousMatch")),
+                        ("warningCount", xraySyncResult.Warnings.Count)));
             }
             else
             {
@@ -606,7 +678,11 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     RunStageName.TestsGenerated,
                     testsGeneratedSkippedAtUtc,
                     "Skipped because automatic Xray test-case sync is not enabled for this run.",
-                    ct);
+                    ct,
+                    metrics: Metrics(
+                        ("autoXraySyncEnabled", _xrayOptions.EnableScenarioAutoUpsert),
+                        ("workflowPass", effectiveRequest.WorkflowPass),
+                        ("validationOutcome", validationResult.Outcome)));
             }
 
             var outputsWrittenStartedAtUtc = _timeProvider.GetUtcNow();
@@ -620,7 +696,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
             OutputWriteResult writeOutput;
             try
             {
-                writeOutput = await _outputWriter.WriteAsync(contextBundle, scenarioBundle, null, validationResult, ct);
+                writeOutput = await _outputWriter.WriteAsync(contextBundle, scenarioBundle, validationResult, ct);
             }
             catch (Exception ex)
             {
@@ -646,7 +722,12 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                     .AddStoredArtifacts(writeOutput.Artifacts)
                     .MarkCompleted(
                         DetermineRunStatus(validationResult.Outcome),
-                        outputsWrittenCompletedAtUtc));
+                        outputsWrittenCompletedAtUtc),
+                Metrics(
+                    ("status", writeOutput.Result.Status),
+                    ("artifactCount", writeOutput.Artifacts.Count),
+                    ("writeResultArtifactCount", writeOutput.Result.Artifacts.Count),
+                    ("runStatus", DetermineRunStatus(validationResult.Outcome))));
         }
         catch (RequestValidationException ex)
         {
@@ -683,15 +764,19 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         DateTimeOffset? stageStartedAtUtc = null)
     {
         var failedAtUtc = _timeProvider.GetUtcNow();
+        var stageRecord = CreateStageRecord(
+            stageName,
+            RunStageStatus.Failed,
+            stageStartedAtUtc ?? failedAtUtc,
+            failedAtUtc,
+            message,
+            Metrics(("errorCode", errorCode)));
+
+        LogStageCompleted(runId, stageRecord);
         await _runStore.UpdateAsync(
             runId,
             current => current
-                .WithStage(CreateStageRecord(
-                    stageName,
-                    RunStageStatus.Failed,
-                    stageStartedAtUtc ?? current.StartedAtUtc ?? failedAtUtc,
-                    failedAtUtc,
-                    message))
+                .WithStage(stageRecord)
                 .AddError(new RunError(errorCode, message, stageName))
                 .MarkCompleted(RunStatus.Failed, failedAtUtc),
             ct);
@@ -704,7 +789,14 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         string details,
         CancellationToken ct,
         bool markRunning = false)
-        => _runStore.UpdateAsync(
+    {
+        _logger.LogInformation(
+            "Started run stage {StageName} for run {RunId} at {StartedAtUtc}.",
+            stageName,
+            runId,
+            startedAtUtc);
+
+        return _runStore.UpdateAsync(
             runId,
             current =>
             {
@@ -714,6 +806,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
                 return updated.WithStage(CreateStageRecord(stageName, RunStageStatus.Running, startedAtUtc, null, details));
             },
             ct);
+    }
 
     private Task CompleteStageAsync(
         string runId,
@@ -721,12 +814,15 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         DateTimeOffset startedAtUtc,
         string details,
         CancellationToken ct,
-        Func<TestGenerationRun, TestGenerationRun> mutate)
+        Func<TestGenerationRun, TestGenerationRun> mutate,
+        IReadOnlyDictionary<string, string>? metrics = null)
     {
         var completedAtUtc = _timeProvider.GetUtcNow();
+        var stageRecord = CreateStageRecord(stageName, RunStageStatus.Succeeded, startedAtUtc, completedAtUtc, details, metrics);
+        LogStageCompleted(runId, stageRecord);
         return _runStore.UpdateAsync(
             runId,
-            current => mutate(current).WithStage(CreateStageRecord(stageName, RunStageStatus.Succeeded, startedAtUtc, completedAtUtc, details)),
+            current => mutate(current).WithStage(stageRecord),
             ct);
     }
 
@@ -736,15 +832,21 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         DateTimeOffset timestampUtc,
         string details,
         CancellationToken ct,
-        Func<TestGenerationRun, TestGenerationRun>? mutate = null)
-        => _runStore.UpdateAsync(
+        Func<TestGenerationRun, TestGenerationRun>? mutate = null,
+        IReadOnlyDictionary<string, string>? metrics = null)
+    {
+        var stageRecord = CreateStageRecord(stageName, RunStageStatus.Skipped, timestampUtc, timestampUtc, details, metrics);
+        LogStageCompleted(runId, stageRecord);
+
+        return _runStore.UpdateAsync(
             runId,
             current =>
             {
                 var updated = mutate is null ? current : mutate(current);
-                return updated.WithStage(CreateStageRecord(stageName, RunStageStatus.Skipped, timestampUtc, timestampUtc, details));
+                return updated.WithStage(stageRecord);
             },
             ct);
+    }
 
     private static void ValidateIntakeRequest(RawRunRequest request)
     {
@@ -753,25 +855,9 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
             throw new RequestValidationException("Request body is required.");
         }
 
-        if (request.Issue is null)
-        {
-            throw new RequestValidationException("issue is required.", "issue");
-        }
-
-        if (request.TriggerInputs is null)
-        {
-            throw new RequestValidationException("triggerInputs is required.", "triggerInputs");
-        }
-
-        if (request.RequestedBy is null)
-        {
-            throw new RequestValidationException("requestedBy is required.", "requestedBy");
-        }
-
-        ValidateRequired(request.RequestSource, "requestSource");
-        ValidateRequired(request.TriggerType, "triggerType");
-        ValidateRequired(request.Issue.Key, "issue.key");
-        ValidateRequired(request.Issue.Id, "issue.id");
+        ValidateRequired(request.WorkflowPass, "workflowPass");
+        ValidateRequired(request.IssueKey, "issueKey");
+        ValidateRequired(request.RequestedBy, "requestedBy");
     }
 
     private static void ValidateRequired(string? value, string fieldName)
@@ -786,9 +872,7 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         NormalizedRunRequest request,
         ValidationResult validationResult,
         XrayRetrievalOptions xrayOptions)
-        => !request.DryRun &&
-           xrayOptions.EnableScenarioAutoUpsert &&
-           request.GenerationMode == GenerationMode.TestCasesOnly &&
+        => xrayOptions.EnableScenarioAutoUpsert &&
            request.WorkflowPass == WorkflowPass.ScenarioDesign &&
            (validationResult.Outcome == ValidationOutcome.Pass ||
             validationResult.Outcome == ValidationOutcome.PassWithWarnings);
@@ -862,13 +946,50 @@ public sealed class TestGenerationRunService : ITestGenerationRunService
         RunStageStatus status,
         DateTimeOffset startedAtUtc,
         DateTimeOffset? completedAtUtc,
-        string details)
-        => new(
+        string details,
+        IReadOnlyDictionary<string, string>? metrics = null)
+    {
+        var stage = new RunStageRecord(
             stageName,
             status,
             startedAtUtc,
             completedAtUtc,
             details);
+        return metrics is null || metrics.Count == 0
+            ? stage
+            : stage with { Metrics = metrics };
+    }
+
+    private void LogStageCompleted(string runId, RunStageRecord stage)
+        => _logger.LogInformation(
+            "Completed run stage {StageName} for run {RunId} with status {StageStatus} in {DurationMs} ms. Metrics: {StageMetrics}",
+            stage.Name,
+            runId,
+            stage.Status,
+            stage.DurationMs,
+            stage.Metrics);
+
+    private static IReadOnlyDictionary<string, string> Metrics(params (string Key, object? Value)[] values)
+    {
+        var metrics = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in values)
+        {
+            if (string.IsNullOrWhiteSpace(key) || value is null)
+            {
+                continue;
+            }
+
+            metrics[key] = value switch
+            {
+                bool boolValue => boolValue ? "true" : "false",
+                Enum enumValue => enumValue.ToString(),
+                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+                _ => value.ToString() ?? string.Empty,
+            };
+        }
+
+        return metrics;
+    }
 
     private static NormalizedRunRequest ApplyRuntimeInferences(
         NormalizedRunRequest request,

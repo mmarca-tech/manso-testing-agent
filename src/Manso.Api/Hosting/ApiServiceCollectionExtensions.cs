@@ -1,8 +1,7 @@
-using System.Text.Json.Serialization;
-using Microsoft.Extensions.Options;
 using Manso.Application;
-using Manso.Domain;
 using Manso.Infrastructure;
+using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
 
 namespace Manso.Api;
 
@@ -57,6 +56,9 @@ public static class ApiServiceCollectionExtensions
         services.AddBoundOptions<RequestNormalizationOptions>(
             configuration,
             RequestNormalizationOptions.SectionName);
+        services.AddBoundOptions<ConfluenceLinkOptions>(
+            configuration,
+            ConfluenceLinkOptions.SectionName);
         services.AddBoundOptions<JiraRetrievalOptions>(
             configuration,
             JiraRetrievalOptions.SectionName);
@@ -78,9 +80,6 @@ public static class ApiServiceCollectionExtensions
         services.AddBoundOptions<RuntimePromptOptions>(
             configuration,
             RuntimePromptOptions.SectionName);
-        services.AddBoundOptions<ValidationOptions>(
-            configuration,
-            ValidationOptions.SectionName);
 
         return services;
     }
@@ -89,6 +88,7 @@ public static class ApiServiceCollectionExtensions
     {
         services.AddSingleton<IRunIdFactory, UtcTimestampRunIdFactory>();
         services.AddSingleton<IBackgroundRunQueue, ChannelBackgroundRunQueue>();
+        services.AddSingleton<DocumentationLinkNormalizer>();
         services.AddSingleton<IRequestNormalizer, RequestNormalizer>();
         services.AddSingleton<AtlassianDocumentTextExtractor>();
         services.AddSingleton<IJiraApiClient, JiraApiClient>();

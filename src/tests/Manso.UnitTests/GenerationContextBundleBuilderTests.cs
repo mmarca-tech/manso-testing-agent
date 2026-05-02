@@ -51,7 +51,7 @@ public sealed class GenerationContextBundleBuilderTests
             "reuse that Xray key instead of creating a duplicate",
             bundle.Sections.Single(section => section.Key == "existing_xray_coverage_index").Content);
         Assert.Contains(
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             bundle.Sections.Single(section => section.Key == "run_metadata").Content);
     }
 
@@ -78,7 +78,53 @@ public sealed class GenerationContextBundleBuilderTests
     }
 
     [Fact]
-    public async Task BuildAsync_ListsAllPullRequestReferences_WhenRepositoryTargetAggregatesMergedPullRequests()
+    public async Task BuildAsync_IncludesRepoOwnedGuidanceSections_WhenPresent()
+    {
+        var builder = new GenerationContextBundleBuilder(
+            new GenerationContextOptions(),
+            new StubRuntimePromptSectionProvider(),
+            NullLogger<GenerationContextBundleBuilder>.Instance);
+
+        var bundle = await builder.BuildAsync(
+            CreateRequest(),
+            CreateIssue(),
+            CreateDocuments(),
+            CreateTarget(),
+            new RepositoryContextBundle(
+                CreateTarget(),
+                CreateConventions(),
+                [new RepositoryFileChange("/src/Callbacks/RetryHandler.cs", RepositoryChangeKind.Modified, false, null, "--- a/src/Callbacks/RetryHandler.cs")],
+                Array.Empty<NeighboringTestFile>(),
+                "--- a/src/Callbacks/RetryHandler.cs",
+                [new RunWarning("repo_context_warning", "Repository context warning.")])
+            {
+                GuidanceFiles =
+                [
+                    new RepositoryGuidanceFile(
+                        RepositoryGuidancePaths.TestArchitecture,
+                        "Use fixture-per-feature tests."),
+                    new RepositoryGuidanceFile(
+                        RepositoryGuidancePaths.MansoTestGeneration,
+                        "Prefer API contract tests for retry flows."),
+                    new RepositoryGuidanceFile(
+                        RepositoryGuidancePaths.RepoConventions,
+                        """{ "supportsExecutableTestGeneration": true }"""),
+                ],
+            },
+            new XrayContextBundle(Array.Empty<XrayTestCase>(), Array.Empty<RunWarning>()),
+            CancellationToken.None);
+
+        Assert.Contains(bundle.Sections, section => section.Key == "repo_test_architecture");
+        Assert.Contains(bundle.Sections, section => section.Key == "repo_manso_testgen");
+        Assert.Contains(bundle.Sections, section => section.Key == "repo_conventions_json");
+        Assert.Contains(
+            "Use fixture-per-feature tests.",
+            bundle.Sections.Single(section => section.Key == "repo_test_architecture").Content);
+        Assert.Contains(bundle.Warnings, warning => warning.Code == "repo_context_warning");
+    }
+
+    [Fact]
+    public async Task BuildAsync_ListsAllPullRequestReferences_WhenRepositoryTargetAggregatesPullRequests()
     {
         var builder = new GenerationContextBundleBuilder(
             new GenerationContextOptions(),
@@ -92,13 +138,13 @@ public sealed class GenerationContextBundleBuilderTests
             PullRequestIds = [881, 882],
             PullRequestReferences =
             [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/881",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             ],
         };
 
         var bundle = await builder.BuildAsync(
-            CreateRequest() with { WorkflowPass = WorkflowPass.AutomationImplementation },
+            CreateRequest(),
             CreateIssue(),
             CreateDocuments(),
             repositoryTarget,
@@ -180,17 +226,10 @@ public sealed class GenerationContextBundleBuilderTests
     private static NormalizedRunRequest CreateRequest()
         => new(
             "QA-1234",
-            GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
-            "bank-otp-api",
-            [
-                "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
-            ],
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+            "SomeRepo",
+            "abc");
 
     private static JiraIssueContext CreateIssue()
         => new(
@@ -220,28 +259,28 @@ public sealed class GenerationContextBundleBuilderTests
 
     private static RepositoryTarget CreateTarget()
         => new(
-            "bank-otp-api",
+            "SomeRepo",
             "AzureDevOps",
-            "afs-dev",
-            "rps",
-            "bank-otp-api",
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+            "SomeProject",
+            "SomeTeam",
+            "SomeRepo",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
             "main",
             "feature/qa-1234",
             "main",
             882,
-            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             "source-sha",
             "target-sha",
             "manual_pr_hint")
         {
             PullRequestIds = [882],
-            PullRequestReferences = ["https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882"],
+            PullRequestReferences = ["https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882"],
         };
 
     private static RepositoryConventions CreateConventions()
         => new(
-            "bank-otp-api",
+            "SomeRepo",
             false,
             "xUnit",
             ".NET 10",
@@ -269,10 +308,12 @@ public sealed class GenerationContextBundleBuilderTests
 
     private sealed class StubRuntimePromptSectionProvider : IRuntimePromptSectionProvider
     {
-        public GenerationContextSection BuildScenarioGenerationSection(RunMetadataContext metadata)
+        public GenerationContextSection BuildScenarioGenerationSection(
+            TestScope testScope,
+            WorkflowPass workflowPass)
             => new(
                 "runtime_guardrails",
                 "RUNTIME GUARDRAILS",
-                $"Requested scope for this run: {metadata.TestScope}.");
+                $"Requested scope for this run: {testScope}.");
     }
 }

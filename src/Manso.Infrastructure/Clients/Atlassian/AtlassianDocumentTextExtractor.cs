@@ -1,6 +1,6 @@
+using HtmlAgilityPack;
 using System.Text;
 using System.Text.Json;
-using HtmlAgilityPack;
 
 namespace Manso.Infrastructure;
 
@@ -34,7 +34,7 @@ public sealed class AtlassianDocumentTextExtractor
             var fallbackText = NormalizeWhitespace(HtmlEntity.DeEntitize(document.DocumentNode.InnerText));
             return string.IsNullOrWhiteSpace(fallbackText)
                 ? Array.Empty<(string Heading, string Text)>()
-                : [( "Introduction", fallbackText )];
+                : [("Introduction", fallbackText)];
         }
 
         var chunks = new List<(string Heading, string Text)>();

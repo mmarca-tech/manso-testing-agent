@@ -13,7 +13,7 @@ public sealed class RepositoryResolverTests
         var resolver = CreateResolver(new StubScmClient(
             new RepositoryPullRequest(
                 882,
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                 "feature/qa-1234",
                 "main",
                 "source-sha",
@@ -33,12 +33,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                             "MERGED",
                             "feature/qa-1234",
                             "refs/heads/main",
@@ -47,10 +47,10 @@ public sealed class RepositoryResolverTests
             ]);
 
         var result = await resolver.ResolveAsync(issue, CreateRequest(
-            repositoryAlias: "bank-otp-api",
-            branchOrPrHint: "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882"), CancellationToken.None);
+            repositoryAlias: "SomeRepo",
+            branchOrPrHint: "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882"), CancellationToken.None);
 
-        Assert.Equal("bank-otp-api", result.Alias);
+        Assert.Equal("SomeRepo", result.Alias);
         Assert.Equal(882, result.PullRequestId);
         Assert.Equal("feature/qa-1234", result.BranchName);
         Assert.Equal("main", result.BaseBranch);
@@ -64,7 +64,7 @@ public sealed class RepositoryResolverTests
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             CreateIssue(),
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: "refs/heads/feature/qa-1234"),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: "refs/heads/feature/qa-1234"),
             CancellationToken.None));
 
         Assert.Contains("returned no repositories", exception.Message);
@@ -89,7 +89,7 @@ public sealed class RepositoryResolverTests
         var resolver = CreateResolver(new StubScmClient(
             new RepositoryPullRequest(
                 134025,
-                "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations/pullrequest/134025",
+                "https://dev.azure.com/SomeProject/repo/_git/zde-workflow-shared-configurations/pullrequest/134025",
                 "RM-15891",
                 "main",
                 "source-sha",
@@ -108,12 +108,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/risk/zde-workflow-shared-configurations",
-                    "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations",
+                    "SomeProject/repo/zde-workflow-shared-configurations",
+                    "https://dev.azure.com/SomeProject/repo/_git/zde-workflow-shared-configurations",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations/pullrequest/134025",
+                            "https://dev.azure.com/SomeProject/repo/_git/zde-workflow-shared-configurations/pullrequest/134025",
                             "MERGED",
                             "RM-15891",
                             "refs/heads/main",
@@ -138,7 +138,7 @@ public sealed class RepositoryResolverTests
             new StubScmClient(
                 new RepositoryPullRequest(
                     882,
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                     "feature/qa-1234",
                     "main",
                     "source-sha",
@@ -158,12 +158,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                             "MERGED",
                             "feature/qa-1234",
                             "refs/heads/main",
@@ -176,7 +176,7 @@ public sealed class RepositoryResolverTests
             CreateRequest(repositoryAlias: null, branchOrPrHint: null),
             CancellationToken.None);
 
-        Assert.Equal("bank-otp-api", result.Alias);
+        Assert.Equal("SomeRepo", result.Alias);
         Assert.Equal(882, result.PullRequestId);
     }
 
@@ -198,8 +198,8 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     Array.Empty<JiraDevelopmentPullRequest>()),
             ]);
@@ -217,7 +217,7 @@ public sealed class RepositoryResolverTests
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             CreateIssue(),
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: null),
             CancellationToken.None));
 
         Assert.Contains("returned no repositories", exception.Message);
@@ -248,7 +248,7 @@ public sealed class RepositoryResolverTests
         var resolver = CreateResolver(new StubScmClient(
             new RepositoryPullRequest(
                 134398,
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                 "feature/itsm-44766",
                 "main",
                 "source-sha",
@@ -268,12 +268,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                             "MERGED",
                             "feature/itsm-44766",
                             "refs/heads/main",
@@ -282,7 +282,7 @@ public sealed class RepositoryResolverTests
             ]);
 
         var result = await resolver.ResolveAsync(issue, CreateRequest(
-            repositoryAlias: "bank-otp-api",
+            repositoryAlias: "SomeRepo",
             branchOrPrHint: null), CancellationToken.None);
 
         Assert.Equal(134398, result.PullRequestId);
@@ -306,17 +306,17 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     [
                         new JiraDevelopmentBranch(
                             "feature/rm-15888-shadow-mode",
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api?version=GBfeature/rm-15888-shadow-mode",
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequestcreate"),
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo?version=GBfeature/rm-15888-shadow-mode",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequestcreate"),
                     ],
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                             "DECLINED",
                             "feature/rm-15888-shadow-mode",
                             "refs/heads/main",
@@ -326,7 +326,7 @@ public sealed class RepositoryResolverTests
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: null),
             CancellationToken.None));
 
         Assert.Contains("no usable Jira development pull requests were present", exception.Message);
@@ -338,7 +338,7 @@ public sealed class RepositoryResolverTests
         var resolver = CreateResolver(new StubScmClient(
             new RepositoryPullRequest(
                 134398,
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                 "feature/rm-15888-shadow-mode",
                 "main",
                 "source-sha",
@@ -357,12 +357,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                             "OPEN",
                             "feature/rm-15888-shadow-mode",
                             "refs/heads/main",
@@ -372,50 +372,12 @@ public sealed class RepositoryResolverTests
 
         var result = await resolver.ResolveAsync(
             issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: null),
             CancellationToken.None);
 
         Assert.Equal(134398, result.PullRequestId);
         Assert.Equal("feature/rm-15888-shadow-mode", result.BranchName);
         Assert.Equal("jira_development_pull_request", result.ResolutionEvidence);
-    }
-
-    [Fact]
-    public async Task ResolveAsync_IgnoresOpenJiraDevelopmentPullRequests_ForAutomationImplementation()
-    {
-        var resolver = CreateResolver(new StubScmClient(null));
-        var issue = new JiraIssueContext(
-            "RM-15888",
-            "Retry callback",
-            "Issue description",
-            null,
-            "Story",
-            "High",
-            Array.Empty<JiraCommentContext>(),
-            Array.Empty<JiraLinkedIssue>(),
-            Array.Empty<string>(),
-            Array.Empty<string>(),
-            [
-                new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
-                    Array.Empty<JiraDevelopmentBranch>(),
-                    [
-                        new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
-                            "OPEN",
-                            "feature/rm-15888-shadow-mode",
-                            "refs/heads/main",
-                            DateTimeOffset.Parse("2026-03-28T08:00:00Z")),
-                    ]),
-            ]);
-
-        var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
-            issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null, workflowPass: WorkflowPass.AutomationImplementation),
-            CancellationToken.None));
-
-        Assert.Contains("no usable Jira development pull requests were present", exception.Message);
     }
 
     [Fact]
@@ -435,12 +397,12 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/risk/zde-workflow-shared-configurations",
-                    "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations",
+                    "SomeProject/repo/zde-workflow-shared-configurations",
+                    "https://dev.azure.com/SomeProject/repo/_git/zde-workflow-shared-configurations",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/risk/_git/zde-workflow-shared-configurations/pullrequest/134025",
+                            "https://dev.azure.com/SomeProject/repo/_git/zde-workflow-shared-configurations/pullrequest/134025",
                             "MERGED",
                             "RM-15891",
                             "refs/heads/main",
@@ -450,7 +412,7 @@ public sealed class RepositoryResolverTests
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: null),
             CancellationToken.None));
 
         Assert.Contains("only referenced different repositories", exception.Message);
@@ -474,72 +436,18 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     Array.Empty<JiraDevelopmentPullRequest>()),
             ]);
 
         var exception = await Assert.ThrowsAsync<RepositoryContextUnavailableException>(() => resolver.ResolveAsync(
             issue,
-            CreateRequest(repositoryAlias: "bank-otp-api", branchOrPrHint: null),
+            CreateRequest(repositoryAlias: "SomeRepo", branchOrPrHint: null),
             CancellationToken.None));
 
         Assert.Contains("matched it, but no usable Jira development pull requests were present", exception.Message);
-    }
-
-    [Fact]
-    public async Task ResolveAsync_AggregatesMergedPullRequests_ForAutomationImplementation_WhenMultipleMergedPullRequestsExist()
-    {
-        var resolver = CreateResolver(new StubScmClient(null));
-
-        var issue = new JiraIssueContext(
-            "RM-15888",
-            "Retry callback",
-            "Issue description",
-            null,
-            "Story",
-            "High",
-            Array.Empty<JiraCommentContext>(),
-            Array.Empty<JiraLinkedIssue>(),
-            Array.Empty<string>(),
-            Array.Empty<string>(),
-            [
-                new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
-                    Array.Empty<JiraDevelopmentBranch>(),
-                    [
-                        new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
-                            "MERGED",
-                            "feature/rm-15888-1",
-                            "refs/heads/main",
-                            DateTimeOffset.Parse("2026-03-27T08:00:00Z")),
-                        new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134399",
-                            "MERGED",
-                            "feature/rm-15888-2",
-                            "refs/heads/main",
-                            DateTimeOffset.Parse("2026-03-28T08:00:00Z")),
-                    ]),
-            ]);
-
-        var result = await resolver.ResolveAsync(
-            issue,
-            CreateRequest("bank-otp-api", null, WorkflowPass.AutomationImplementation),
-            CancellationToken.None);
-
-        Assert.Null(result.PullRequestId);
-        Assert.Null(result.PullRequestReference);
-        Assert.Equal("jira_development_merged_pull_request_aggregate", result.ResolutionEvidence);
-        Assert.Equal([134398, 134399], result.PullRequestIds);
-        Assert.Equal(
-            [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134399",
-            ],
-            result.PullRequestReferences);
     }
 
     [Fact]
@@ -560,18 +468,18 @@ public sealed class RepositoryResolverTests
             Array.Empty<string>(),
             [
                 new JiraDevelopmentRepository(
-                    "afs-dev/rps/bank-otp-api",
-                    "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                    "SomeProject/SomeTeam/SomeRepo",
+                    "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                     Array.Empty<JiraDevelopmentBranch>(),
                     [
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
                             "MERGED",
                             "feature/rm-15888-1",
                             "refs/heads/main",
                             DateTimeOffset.Parse("2026-03-27T08:00:00Z")),
                         new JiraDevelopmentPullRequest(
-                            "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134399",
+                            "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134399",
                             "MERGED",
                             "feature/rm-15888-2",
                             "refs/heads/main",
@@ -581,17 +489,17 @@ public sealed class RepositoryResolverTests
 
         var result = await resolver.ResolveAsync(
             issue,
-            CreateRequest("bank-otp-api", null, WorkflowPass.ScenarioDesign),
+            CreateRequest("SomeRepo", null, WorkflowPass.ScenarioDesign),
             CancellationToken.None);
 
         Assert.Null(result.PullRequestId);
         Assert.Null(result.PullRequestReference);
-        Assert.Equal("jira_development_merged_pull_request_aggregate", result.ResolutionEvidence);
+        Assert.Equal("jira_development_pull_request_aggregate", result.ResolutionEvidence);
         Assert.Equal([134398, 134399], result.PullRequestIds);
         Assert.Equal(
             [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134398",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/134399",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134398",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/134399",
             ],
             result.PullRequestReferences);
     }
@@ -602,15 +510,10 @@ public sealed class RepositoryResolverTests
         WorkflowPass workflowPass = WorkflowPass.ScenarioDesign)
         => new(
             "QA-1234",
-            GenerationMode.TestCasesOnly,
             workflowPass,
             TestScope.Api,
             repositoryAlias,
-            Array.Empty<string>(),
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+            "abc");
 
     private sealed class StubScmClient : IScmClient
     {
@@ -641,10 +544,11 @@ public sealed class RepositoryResolverTests
             CancellationToken ct)
             => throw new NotSupportedException();
 
-        public Task<RepositoryWriteExecutionResult> WriteAsync(
+        public Task<IReadOnlyList<RepositoryGuidanceFile>> GetRepositoryFilesAsync(
             RepositoryTarget target,
-            RepositoryWritePlan plan,
+            IReadOnlyList<string> paths,
             CancellationToken ct)
             => throw new NotSupportedException();
+
     }
 }

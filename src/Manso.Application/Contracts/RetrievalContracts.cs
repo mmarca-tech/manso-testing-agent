@@ -11,7 +11,6 @@ public interface IDocumentationResolver
 {
     Task<DocumentationResolutionResult> ResolveAsync(
         JiraIssueContext issue,
-        NormalizedRunRequest request,
         CancellationToken ct);
 }
 
@@ -39,6 +38,7 @@ public interface IRepositoryAdapter
 
     Task<RepositoryConventions> GetConventionsAsync(
         RepositoryTarget target,
+        IReadOnlyList<RepositoryGuidanceFile> guidanceFiles,
         CancellationToken ct);
 }
 
@@ -61,7 +61,9 @@ public interface IGenerationContextBundleBuilder
 
 public interface IRuntimePromptSectionProvider
 {
-    GenerationContextSection BuildScenarioGenerationSection(RunMetadataContext metadata);
+    GenerationContextSection BuildScenarioGenerationSection(
+        TestScope testScope,
+        WorkflowPass workflowPass);
 }
 
 public interface IXrayContextService
@@ -99,7 +101,6 @@ public interface IOutputValidator
     Task<ValidationResult> ValidateAsync(
         GenerationContextBundle bundle,
         GeneratedScenarioBundle scenarios,
-        GeneratedCodeBundle? code,
         CancellationToken ct);
 }
 
@@ -108,7 +109,6 @@ public interface IOutputWriter
     Task<OutputWriteResult> WriteAsync(
         GenerationContextBundle bundle,
         GeneratedScenarioBundle scenarios,
-        GeneratedCodeBundle? code,
         ValidationResult validation,
         CancellationToken ct);
 }
@@ -133,9 +133,9 @@ public interface IScmClient
         RepositoryConventions conventions,
         CancellationToken ct);
 
-    Task<RepositoryWriteExecutionResult> WriteAsync(
+    Task<IReadOnlyList<RepositoryGuidanceFile>> GetRepositoryFilesAsync(
         RepositoryTarget target,
-        RepositoryWritePlan plan,
+        IReadOnlyList<string> paths,
         CancellationToken ct);
 }
 
@@ -180,14 +180,6 @@ public interface IXrayApiClient
         XrayTestSetCreateRequest request,
         CancellationToken ct);
 
-    Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
-        XrayTestExecutionUploadRequest request,
-        CancellationToken ct);
-
-    Task AddTestsToTestPlanAsync(
-        XrayAssociationUpdateRequest request,
-        CancellationToken ct);
-
     Task AddTestsToTestSetAsync(
         XrayAssociationUpdateRequest request,
         CancellationToken ct);
@@ -195,7 +187,10 @@ public interface IXrayApiClient
 
 public sealed record DocumentationResolutionResult(
     IReadOnlyList<ConfluenceDocument> Documents,
-    IReadOnlyList<RunWarning> Warnings);
+    IReadOnlyList<RunWarning> Warnings)
+{
+    public int ProviderRequestCount { get; init; }
+}
 
 public sealed class JiraRetrievalOptions
 {
@@ -217,6 +212,13 @@ public sealed class DocumentationRetrievalOptions
     public int MaxChunksPerPage { get; init; } = 3;
 
     public bool RequireDocumentation { get; init; }
+}
+
+public sealed class ConfluenceLinkOptions
+{
+    public const string SectionName = "Confluence";
+
+    public string[] AllowedHosts { get; init; } = Array.Empty<string>();
 }
 
 public sealed class XrayRetrievalOptions
@@ -273,39 +275,6 @@ public sealed class RuntimePromptOptions
     public string RootPath { get; init; } = DefaultRootPath;
 }
 
-public sealed class ValidationOptions
-{
-    public const string SectionName = "Validation";
-
-    public string[] PlaceholderMarkers { get; init; } =
-    [
-        "TODO",
-        "FIXME",
-        "TBD",
-        "{{",
-        "}}",
-        "<placeholder>",
-    ];
-
-    public string[] AllowedFileExtensions { get; init; } =
-    [
-        ".cs",
-        ".feature",
-        ".json",
-        ".yml",
-        ".yaml",
-        ".xml",
-        ".md",
-        ".txt",
-        ".js",
-        ".jsx",
-        ".ts",
-        ".tsx",
-    ];
-
-    public bool RequireAssertionsInGeneratedTests { get; init; } = true;
-}
-
 public sealed class LlmGatewayOptions
 {
     public const string SectionName = "Llm";
@@ -341,7 +310,12 @@ public sealed record LlmPromptRequest(
 public sealed record LlmCompletionResult(
     string Provider,
     string Model,
-    string JsonOutput);
+    string JsonOutput)
+{
+    public LlmUsageMetrics? Usage { get; init; }
+
+    public int ProviderRequestCount { get; init; }
+}
 
 public sealed class RepositoryContextUnavailableException : Exception
 {

@@ -1,5 +1,5 @@
-using System.Text.Json;
 using Manso.Application;
+using System.Text.Json;
 
 namespace Manso.Infrastructure;
 

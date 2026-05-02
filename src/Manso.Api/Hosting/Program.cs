@@ -1,7 +1,4 @@
 using Manso.Api;
-using Manso.Application;
-using Manso.Domain;
-using Manso.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 

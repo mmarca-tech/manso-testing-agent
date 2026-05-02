@@ -1,9 +1,10 @@
+using Manso.Application;
+using Manso.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Manso.Application;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Manso.Infrastructure;
 
@@ -76,7 +77,11 @@ public sealed class AnthropicLlmGateway : ILlmGateway
                 .Select(item => item.TryGetProperty("text", out var textElement) ? textElement.GetString() : null)
                 .Where(value => !string.IsNullOrWhiteSpace(value)));
 
-        return new LlmCompletionResult("Anthropic", options.Model, text);
+        return new LlmCompletionResult("Anthropic", options.Model, text)
+        {
+            Usage = ExtractUsage(document.RootElement),
+            ProviderRequestCount = 1,
+        };
     }
 
     private static void ValidateOptions(LlmGatewayOptions options, LlmProvider expectedProvider)
@@ -92,4 +97,30 @@ public sealed class AnthropicLlmGateway : ILlmGateway
             throw new InvalidOperationException("Llm:ApiKey and Llm:Model are required for the Anthropic provider.");
         }
     }
+
+    private static LlmUsageMetrics? ExtractUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usageElement) ||
+            usageElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var inputTokens = TryReadInt(usageElement, "input_tokens");
+        var outputTokens = TryReadInt(usageElement, "output_tokens");
+        var totalTokens = inputTokens is not null && outputTokens is not null
+            ? inputTokens + outputTokens
+            : null;
+
+        return inputTokens is null && outputTokens is null
+            ? null
+            : new LlmUsageMetrics(inputTokens, outputTokens, totalTokens, null);
+    }
+
+    private static int? TryReadInt(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var valueElement) &&
+           valueElement.ValueKind == JsonValueKind.Number &&
+           valueElement.TryGetInt32(out var value)
+            ? value
+            : null;
 }

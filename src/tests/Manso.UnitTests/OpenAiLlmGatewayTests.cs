@@ -1,10 +1,10 @@
-using System.Net;
-using System.Text;
-using System.Text.Json;
 using Manso.Application;
 using Manso.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Text;
+using System.Text.Json;
 
 namespace Manso.UnitTests;
 
@@ -96,6 +96,7 @@ public sealed class OpenAiLlmGatewayTests
             CancellationToken.None);
 
         Assert.Equal("{\"scenarios\":[]}", result.JsonOutput);
+        Assert.Equal(3, result.ProviderRequestCount);
         Assert.Equal(3, handler.RequestPaths.Count);
         Assert.EndsWith("responses", handler.RequestPaths[0], StringComparison.OrdinalIgnoreCase);
         Assert.EndsWith("responses/resp_123", handler.RequestPaths[1], StringComparison.OrdinalIgnoreCase);

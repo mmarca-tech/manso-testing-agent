@@ -19,9 +19,18 @@ public sealed class DocumentationResolverTests
                 MaxChunksPerPage = 2,
                 RequireDocumentation = false,
             },
+            CreateLinkNormalizer(),
             NullLogger<DocumentationResolver>.Instance);
 
-        var result = await resolver.ResolveAsync(CreateIssue(), CreateRequest(), CancellationToken.None);
+        var issue = CreateIssue() with
+        {
+            Description = """
+                See https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
+                and https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract
+                """,
+        };
+
+        var result = await resolver.ResolveAsync(issue, CancellationToken.None);
 
         Assert.Equal(2, result.Documents.Count);
         Assert.Empty(result.Warnings);
@@ -34,9 +43,10 @@ public sealed class DocumentationResolverTests
         var resolver = new DocumentationResolver(
             new StubConfluenceApiClient(),
             new DocumentationRetrievalOptions { RequireDocumentation = false },
+            CreateLinkNormalizer(),
             NullLogger<DocumentationResolver>.Instance);
 
-        var result = await resolver.ResolveAsync(CreateIssue(), CreateRequest(Array.Empty<string>()), CancellationToken.None);
+        var result = await resolver.ResolveAsync(CreateIssue(), CancellationToken.None);
 
         Assert.Empty(result.Documents);
         Assert.Contains(result.Warnings, warning => warning.Code == "no_explicit_documentation_links");
@@ -53,9 +63,10 @@ public sealed class DocumentationResolverTests
                 MaxPages = 5,
                 MaxChunksPerPage = 3,
             },
+            CreateLinkNormalizer(),
             NullLogger<DocumentationResolver>.Instance);
 
-        var result = await resolver.ResolveAsync(CreateIssue(), CreateRequest(Array.Empty<string>()), CancellationToken.None);
+        var result = await resolver.ResolveAsync(CreateIssue(), CancellationToken.None);
 
         Assert.Single(result.Documents);
         Assert.Equal("22222", result.Documents[0].PageId);
@@ -69,9 +80,10 @@ public sealed class DocumentationResolverTests
             new DocumentationRetrievalOptions
             {
                 IncludeCommentLinks = false,
-                MaxPages = 5,
+                MaxPages = 1,
                 MaxChunksPerPage = 3,
             },
+            CreateLinkNormalizer(),
             NullLogger<DocumentationResolver>.Instance);
 
         var issue = CreateIssue() with
@@ -80,10 +92,82 @@ public sealed class DocumentationResolverTests
             Comments = Array.Empty<JiraCommentContext>(),
         };
 
-        var result = await resolver.ResolveAsync(issue, CreateRequest(Array.Empty<string>()), CancellationToken.None);
+        var result = await resolver.ResolveAsync(issue, CancellationToken.None);
 
         Assert.Single(result.Documents);
         Assert.Equal("33333", result.Documents[0].PageId);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ValidatesIssueDescriptionLinksAgainstAllowedHosts()
+    {
+        var resolver = new DocumentationResolver(
+            new StubConfluenceApiClient(),
+            new DocumentationRetrievalOptions
+            {
+                IncludeCommentLinks = false,
+                MaxPages = 5,
+                MaxChunksPerPage = 3,
+            },
+            CreateLinkNormalizer(),
+            NullLogger<DocumentationResolver>.Instance);
+        var issue = CreateIssue() with
+        {
+            Description = """
+                See https://evil.example/wiki/spaces/ENG/pages/11111/Bad+Host
+                and http://yourcompany.atlassian.net/wiki/spaces/ENG/pages/22222/Insecure
+                and https://yourcompany.atlassian.net/browse/QA-1234
+                and https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/33333/Retry+Rules
+                """,
+            AcceptanceCriteria = null,
+            Comments = Array.Empty<JiraCommentContext>(),
+        };
+
+        var result = await resolver.ResolveAsync(issue, CancellationToken.None);
+
+        Assert.Single(result.Documents);
+        Assert.Equal("33333", result.Documents[0].PageId);
+        Assert.Equal(3, result.Warnings.Count(warning => warning.Code == "documentation_link_ignored"));
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ValidatesCommentLinksAgainstAllowedHosts_WhenEnabled()
+    {
+        var resolver = new DocumentationResolver(
+            new StubConfluenceApiClient(),
+            new DocumentationRetrievalOptions
+            {
+                IncludeCommentLinks = true,
+                MaxPages = 5,
+                MaxChunksPerPage = 3,
+            },
+            CreateLinkNormalizer(),
+            NullLogger<DocumentationResolver>.Instance);
+        var issue = CreateIssue() with
+        {
+            Description = string.Empty,
+            AcceptanceCriteria = null,
+            Comments =
+            [
+                new JiraCommentContext(
+                    "1",
+                    "Alice",
+                    """
+                    Invalid https://othercompany.atlassian.net/wiki/spaces/ENG/pages/11111/Other+Tenant
+                    Valid https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/22222/Retry+Decision+Log
+                    """,
+                    DateTimeOffset.UtcNow),
+            ],
+        };
+
+        var result = await resolver.ResolveAsync(issue, CancellationToken.None);
+
+        Assert.Single(result.Documents);
+        Assert.Equal("22222", result.Documents[0].PageId);
+        Assert.Contains(
+            result.Warnings,
+            warning => warning.Code == "documentation_link_ignored" &&
+                       warning.Message.Contains("othercompany.atlassian.net", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -96,15 +180,17 @@ public sealed class DocumentationResolverTests
                 MaxPages = 5,
                 MaxChunksPerPage = 3,
             },
+            CreateLinkNormalizer(),
             NullLogger<DocumentationResolver>.Instance);
 
         var result = await resolver.ResolveAsync(
-            CreateIssue(),
-            CreateRequest(
-                [
-                    "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
-                    "https://yourcompany.atlassian.net/wiki/spaces/REL/pages/99999/Release+Notes",
-                ]),
+            CreateIssue() with
+            {
+                Description = """
+                    See https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow
+                    and https://yourcompany.atlassian.net/wiki/spaces/REL/pages/99999/Release+Notes
+                    """,
+            },
             CancellationToken.None);
 
         Assert.Single(result.Documents);
@@ -130,22 +216,11 @@ public sealed class DocumentationResolverTests
             Array.Empty<string>(),
             Array.Empty<JiraDevelopmentRepository>());
 
-    private static NormalizedRunRequest CreateRequest(IReadOnlyList<string>? links = null)
-        => new(
-            "QA-1234",
-            GenerationMode.TestCasesOnly,
-            WorkflowPass.ScenarioDesign,
-            TestScope.Api,
-            "bank-otp-api",
-            links ?? new[]
-            {
-                "https://yourcompany.atlassian.net/wiki/spaces/ENG/pages/12345/Retry+Flow",
-                "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract",
-            },
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+    private static DocumentationLinkNormalizer CreateLinkNormalizer()
+        => new(new ConfluenceLinkOptions
+        {
+            AllowedHosts = ["yourcompany.atlassian.net"],
+        });
 
     private sealed class StubConfluenceApiClient : IConfluenceApiClient
     {

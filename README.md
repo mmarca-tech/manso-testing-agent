@@ -2,7 +2,7 @@
 
 Deterministic ASP.NET Core/.NET 10 service for Jira-triggered test-design runs.
 
-The current implementation accepts a Jira Automation-style webhook, normalizes the request, retrieves bounded context from Jira, explicit Confluence links, Azure DevOps, and optional Xray coverage, generates candidate scenarios through a replaceable LLM gateway, validates the result, and stores run artifacts for later inspection.
+The current implementation accepts a Jira Automation-style webhook, normalizes the request, retrieves bounded context from Jira, explicit Confluence links found in the Jira issue, Azure DevOps, and optional Xray coverage, generates candidate scenarios through a replaceable LLM gateway, validates the result, and stores run artifacts for later inspection.
 
 ![Gateway flow](docs/flow.png)
 
@@ -21,14 +21,12 @@ Implemented end-to-end today:
 - artifact listing and artifact download endpoints
 - optional Xray scenario auto-upsert for scenario-design test cases
 
-Present in supporting services, but not wired through the current orchestration path:
-
-- executable test code generation
-- repository branch push and draft PR creation from generated code
-
 Not implemented in the current runtime flow:
 
 - Jira writeback stage
+- executable test code generation
+- repository branch push and draft PR creation from generated code
+- Xray test execution upload with test-plan/test-set association
 - MCP transport
 
 ## Runtime Flow
@@ -36,9 +34,9 @@ Not implemented in the current runtime flow:
 The background execution path is:
 
 1. `RequestAccepted`: persist the run and enqueue background execution.
-2. `RequestNormalized`: apply enum defaults, trim requester data, and keep only allowed explicit Confluence links.
+2. `RequestNormalized`: apply enum defaults and trim requester data.
 3. `JiraContextCollected`: retrieve the Jira issue, selected comments, linked issues, and referenced issue context.
-4. `ConfluenceResolved`: fetch only the explicit Confluence links provided on intake.
+4. `ConfluenceResolved`: fetch only explicit Confluence links found in the fetched Jira issue context.
 5. `RepositoryResolved`: resolve Azure DevOps repository and PR or branch context from Jira development metadata.
 6. `CodeContextCollected`: collect changed files, bounded unified diffs, and neighboring tests.
 7. `XrayContextCollected`: retrieve linked and neighboring Xray tests when enabled.
@@ -48,7 +46,11 @@ The background execution path is:
 11. `OutputsValidated`: run deterministic validation over generated scenarios.
 12. `OutputsWritten`: store markdown/json artifacts and a write summary.
 
-`dryRun=true` stops after `ContextBundleBuilt`, stores prompt preview artifacts, and skips generation, validation, and write output.
+Run observability is stored with each stage and returned by `GET /api/runs/{runId}`:
+
+- `durationMs` is computed when a stage reaches `Succeeded`, `Skipped`, or `Failed`
+- `metrics` contains stage-specific counters such as context counts, warning/error counts, prompt character counts, provider request counts, Xray sync counts, and LLM token usage when the provider returns it
+- structured logs are emitted when stages start and complete, including stage name, status, duration, and metrics
 
 ## API
 
@@ -74,44 +76,29 @@ The current webhook payload is smaller than earlier planning docs. The API now a
 
 ```json
 {
-  "requestSource": "JiraAutomation",
-  "triggerType": "Manual",
-  "issue": {
-    "key": "QA-1234",
-    "id": "10001"
-  },
-  "triggerInputs": {
-    "generationMode": "TestCasesOnly",
-    "workflowPass": "ScenarioDesign",
-    "extraDocumentationLinks": "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract",
-    "coverageIntent": "Regression",
-    "outputTarget": "JiraComment",
-    "dryRun": false
-  },
-  "requestedBy": {
-    "accountId": "abc-123",
-    "displayName": "Manuel Marcatili",
-    "email": "manuel@example.com"
-  }
+  "workflowPass": "ScenarioDesign",
+  "issueKey": "QA-1234",
+  "requestedBy": "abc-123"
 }
 ```
 
 Notes:
 
-- `issue` currently contains only `key` and `id`.
-- `triggerInputs.extraDocumentationLinks` is a newline-delimited string of explicit Confluence URLs.
-- only `https://.../wiki/...` links on allowed hosts survive normalization
-- repository alias, test scope, and documentation URL fields are not part of the current intake contract
+- `issueKey` is the Jira issue key.
+- `requestedBy` is the Jira/Atlassian account ID that triggered the run.
+- Confluence links are not accepted in the webhook body; they are extracted from the fetched Jira issue description, acceptance criteria, and comments when comment-link parsing is enabled.
+- only `https://.../wiki/...` links on allowed hosts are fetched
 - test scope starts from the configured default and can be inferred from repository context at runtime
+- repository context is derived from Jira development metadata and runtime context
 
 Supported enum values:
 
 | Field | Values |
 | --- | --- |
-| `generationMode` | `TestCasesOnly`, `ExecutableTests` |
-| `workflowPass` | `ScenarioDesign`, `AutomationImplementation` |
-| `coverageIntent` | `HappyPathOnly`, `Regression`, `EdgeCases`, `HighRisk` |
-| `outputTarget` | `JiraComment`, `DraftPullRequest`, `Both` |
+| `workflowPass` | `ScenarioDesign` |
+
+`workflowPass` is the user-facing selector. `ScenarioDesign` is currently the
+only supported pass and creates or updates test cases only.
 
 Default normalization values come from `RequestNormalization` in `src/Manso.Api/appsettings.json`.
 
@@ -121,8 +108,8 @@ The run store keeps artifact metadata and full artifact content. Common artifact
 
 | Artifact | When it appears |
 | --- | --- |
-| `generation-context-bundle.json` | dry runs and normal runs after context assembly |
-| `llm-prompt.json` | dry runs and normal runs after context assembly |
+| `generation-context-bundle.json` | after context assembly |
+| `llm-prompt.json` | after context assembly |
 | `generated-scenarios.json` | successful scenario generation |
 | `generated-scenarios.md` | successful output writing |
 | `validation-report.json` | successful validation |
@@ -131,8 +118,7 @@ The run store keeps artifact metadata and full artifact content. Common artifact
 
 Important limitation:
 
-- the current orchestration does not pass a generated code bundle into `OutputWriter`, so `write-result.json` usually reports artifact-only outcomes such as `ArtifactsStoredNoRepoWrite`
-- draft PR creation support exists in the SCM/output services, but it is not exercised by the current API execution path
+- the current orchestration stores scenario artifacts only; it does not create branches or draft PRs
 
 ## Repository Resolution Rules
 
@@ -140,20 +126,24 @@ Repository context is intentionally deterministic:
 
 - repository selection comes from Jira development information
 - `ScenarioDesign` accepts open or merged pull requests and ignores rejected or abandoned ones
-- `AutomationImplementation` only uses merged or completed pull requests
 - if Jira does not uniquely identify one repository, the repository stages are skipped with explicit warnings instead of defaulting silently
+- repo-specific test-generation guidance is read only from the fixed Manso paths in the target repo, including `/.manso/repo-conventions.json` when present
 
 ## Xray Behavior
 
-Two Xray features exist today:
+The current orchestration path uses two Xray features:
 
 - neighboring Xray test retrieval for prompt context
 - optional automatic test case upsert from generated scenarios
 
+The Xray provider client also supports creating Test Executions, updating Test
+Run status/comment/evidence, and associating tests/executions with Xray Test
+Plans and Test Sets. That execution-upload path is available at the provider
+boundary but is not yet invoked by the runtime workflow.
+
 Automatic Xray upsert only runs when all of these are true:
 
 - `XrayRetrieval:EnableScenarioAutoUpsert=true`
-- `generationMode=TestCasesOnly`
 - `workflowPass=ScenarioDesign`
 - validation outcome is `Pass` or `PassWithWarnings`
 
@@ -182,7 +172,7 @@ Primary configuration sections currently used by the application:
 | `ConnectionStrings` | run-store connection string |
 | `RunIntakeAuthentication` | bearer token for webhook intake |
 | `RunPersistence` | `Postgres` or `InMemory` run storage |
-| `RequestNormalization` | enum defaults and allowed Confluence hosts |
+| `RequestNormalization` | internal defaults for scope, coverage, and output |
 | `Jira` | Jira API connection settings |
 | `JiraRetrieval` | Jira comment retrieval behavior |
 | `Confluence` | Confluence API connection settings |
@@ -224,25 +214,9 @@ Example request:
 $token = "local-dev-token"
 $body = @'
 {
-  "requestSource": "JiraAutomation",
-  "triggerType": "Manual",
-  "issue": {
-    "key": "QA-1234",
-    "id": "10001"
-  },
-  "triggerInputs": {
-    "generationMode": "TestCasesOnly",
-    "workflowPass": "ScenarioDesign",
-    "extraDocumentationLinks": "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract",
-    "coverageIntent": "Regression",
-    "outputTarget": "JiraComment",
-    "dryRun": false
-  },
-  "requestedBy": {
-    "accountId": "abc-123",
-    "displayName": "Manuel Marcatili",
-    "email": "manuel@example.com"
-  }
+  "workflowPass": "ScenarioDesign",
+  "issueKey": "QA-1234",
+  "requestedBy": "abc-123"
 }
 '@
 
@@ -299,12 +273,12 @@ Planning and runtime guidance:
 
 - the Docker image is built from `src/Manso.Api/Dockerfile`
 - Azure pipeline config lives in `.azure/pipeline-app.yaml`
-- Key Vault secret declarations for the current deployment live in `infra/terraform/keyvault-rps-infra.tf`
+- Key Vault secret declarations for the current deployment live in `infra/terraform/keyvault-SomeTeam-infra.tf`
 
 ## Guardrails
 
 - retrieval is bounded and deterministic
-- Confluence retrieval is explicit-link only
-- protected branches must not be written directly
+- Confluence retrieval is explicit-link only from Jira issue context
+- repository write paths are disabled in the current runtime flow
 - auto-merge is not allowed
-- generated output must pass deterministic validation before any future repository write path is allowed to proceed
+- generated scenarios must pass deterministic validation before output artifacts are finalized

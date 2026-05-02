@@ -1,11 +1,9 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text;
-using Manso.Application;
 using Manso.Domain;
 using Manso.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Text;
 
 namespace Manso.UnitTests;
 

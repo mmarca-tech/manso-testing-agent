@@ -1,6 +1,6 @@
+using Manso.Domain;
 using System.Text;
 using System.Text.RegularExpressions;
-using Manso.Domain;
 
 namespace Manso.Application;
 

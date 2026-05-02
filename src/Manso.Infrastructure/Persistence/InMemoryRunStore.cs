@@ -16,7 +16,7 @@ public sealed class InMemoryRunStore : IRunStore
         {
             if (_runs.ContainsKey(run.RunId))
             {
-                throw new InvalidOperationException($"Run '{run.RunId}' already exists.");
+                throw new RunAlreadyExistsException(run.RunId);
             }
 
             _runs.Add(run.RunId, run);
@@ -32,6 +32,24 @@ public sealed class InMemoryRunStore : IRunStore
         lock (_sync)
         {
             _runs.TryGetValue(runId, out var run);
+            return Task.FromResult(run);
+        }
+    }
+
+    public Task<TestGenerationRun?> FindActiveAsync(
+        string issueKey,
+        WorkflowPass workflowPass,
+        string? repositoryAlias,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        lock (_sync)
+        {
+            var run = _runs.Values
+                .Where(run => MatchesActiveRun(run, issueKey, workflowPass, repositoryAlias))
+                .OrderBy(run => run.CreatedAtUtc)
+                .FirstOrDefault();
             return Task.FromResult(run);
         }
     }
@@ -52,4 +70,15 @@ public sealed class InMemoryRunStore : IRunStore
 
         return Task.CompletedTask;
     }
+
+    private static bool MatchesActiveRun(
+        TestGenerationRun run,
+        string issueKey,
+        WorkflowPass workflowPass,
+        string? repositoryAlias)
+        => run.Status is RunStatus.Queued or RunStatus.Running &&
+           run.IssueKey.Equals(issueKey, StringComparison.OrdinalIgnoreCase) &&
+           run.NormalizedRequest is { } normalized &&
+           normalized.WorkflowPass == workflowPass &&
+           string.Equals(normalized.RepositoryAlias, repositoryAlias, StringComparison.OrdinalIgnoreCase);
 }

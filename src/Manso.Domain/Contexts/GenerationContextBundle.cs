@@ -1,7 +1,9 @@
 namespace Manso.Domain;
 
 public sealed record GenerationContextBundle(
-    RunMetadataContext Metadata,
+    string IssueKey,
+    TestScope TestScope,
+    WorkflowPass WorkflowPass,
     IReadOnlyList<GenerationContextSection> Sections,
     IReadOnlyList<RunWarning> Warnings,
     int DocumentationDocumentCount,

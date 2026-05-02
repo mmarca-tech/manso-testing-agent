@@ -19,11 +19,7 @@ public sealed class MansoApiFactory : WebApplicationFactory<Program>
                 ["RunIntakeAuthentication:BearerToken"] = "test-token",
                 ["RunPersistence:Provider"] = "InMemory",
                 ["RunPersistence:AutoInitializeSchema"] = "false",
-                ["RequestNormalization:AllowedConfluenceHosts:0"] = "yourcompany.atlassian.net",
                 ["RequestNormalization:DefaultTestScope"] = "Api",
-                ["RequestNormalization:DefaultGenerationMode"] = "TestCasesOnly",
-                ["RequestNormalization:DefaultCoverageIntent"] = "Regression",
-                ["RequestNormalization:DefaultOutputTarget"] = "JiraComment",
                 ["XrayRetrieval:Enabled"] = "true",
                 ["XrayRetrieval:EnableScenarioAutoUpsert"] = "true",
             });

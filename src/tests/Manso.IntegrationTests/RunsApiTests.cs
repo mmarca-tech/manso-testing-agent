@@ -1,11 +1,11 @@
+using Manso.Api;
+using Manso.Application;
+using Manso.Domain;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Manso.Api;
-using Manso.Application;
-using Manso.Domain;
 
 namespace Manso.IntegrationTests;
 
@@ -49,13 +49,13 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.XrayContextCollected && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ContextBundleBuilt && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ScenariosGenerated && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Succeeded);
-        Assert.Equal("bank-otp-api", run.Repository);
-        Assert.Equal("https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882", run.PullRequestReference);
+        Assert.Equal("SomeRepo", run.Repository);
+        Assert.Equal("https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882", run.PullRequestReference);
         Assert.Equal(
-            ["https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882"],
+            ["https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882"],
             run.PullRequestReferences);
 
         var rawRunResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}");
@@ -82,7 +82,7 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         var writeResultResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts/write-result.json");
         writeResultResponse.EnsureSuccessStatusCode();
         var writeResultJson = await writeResultResponse.Content.ReadAsStringAsync();
-        Assert.Contains("ArtifactsStoredNoRepoWrite", writeResultJson);
+        Assert.Contains("ScenarioArtifactsStored", writeResultJson);
     }
 
     [Fact]
@@ -97,9 +97,9 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
     }
 
     [Fact]
-    public async Task PostRuns_ReturnsBadRequest_WhenGenerationModeIsInvalid()
+    public async Task PostRuns_ReturnsBadRequest_WhenWorkflowPassIsUnsupported()
     {
-        var request = CreateRequest(generationMode: "GenerateEverything");
+        var request = CreateRequest(workflowPass: "DoEverything");
 
         var response = await _client.PostAsJsonAsync("/api/runs", request);
 
@@ -108,6 +108,7 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         var error = await response.Content.ReadFromJsonAsync<ApiErrorResponse>(JsonOptions);
         Assert.NotNull(error);
         Assert.Equal("INVALID_REQUEST", error.ErrorCode);
+        Assert.Contains("not supported", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -130,7 +131,7 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ContextBundleBuilt && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.XrayContextCollected && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ScenariosGenerated && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Warnings, warning => warning.Code == "repository_context_unavailable");
@@ -156,44 +157,14 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.CodeContextCollected && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.XrayContextCollected && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ScenariosGenerated && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
+        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Succeeded);
         Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Succeeded);
         Assert.DoesNotContain(run.Warnings, warning => warning.Code == "repository_context_unavailable");
         Assert.Equal(
             [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
-            ],
-            run.PullRequestReferences);
-    }
-
-    [Fact]
-    public async Task PostRuns_ReturnsAllPullRequestReferences_ForAutomationImplementation_WhenMultipleMergedPrsExist()
-    {
-        var request = CreateRequest(
-            issueKey: "QA-MULTIPR",
-            workflowPass: "AutomationImplementation");
-
-        var response = await _client.PostAsJsonAsync("/api/runs", request);
-
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-
-        var accepted = await response.Content.ReadFromJsonAsync<RunAcceptedResponse>(JsonOptions);
-        Assert.NotNull(accepted);
-
-        var run = await WaitForCompletionAsync(accepted.RunId);
-        Assert.Equal(RunStatus.Succeeded, run.Status);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.RepositoryResolved && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.XrayContextCollected && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Succeeded);
-        Assert.Equal("https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881", run.PullRequestReference);
-        Assert.Equal(
-            [
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/881",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/881",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
             ],
             run.PullRequestReferences);
     }
@@ -202,7 +173,6 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
     public async Task PostRuns_AutoCreatesOrUpdatesXrayTests_ForScenarioDesignTestCasesOnly()
     {
         var request = CreateRequest(
-            generationMode: "TestCasesOnly",
             workflowPass: "ScenarioDesign");
 
         var response = await _client.PostAsJsonAsync("/api/runs", request);
@@ -221,52 +191,14 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
         Assert.Contains("\"Action\":\"Updated\"", syncArtifactJson);
     }
 
-    [Fact]
-    public async Task PostRuns_StoresPromptArtifacts_AndSkipsGeneration_WhenDryRunIsEnabled()
-    {
-        var request = CreateRequest(dryRun: true);
+    private Task<RunDetailsResponse> WaitForCompletionAsync(string runId)
+        => WaitForCompletionAsync(_client, runId);
 
-        var response = await _client.PostAsJsonAsync("/api/runs", request);
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-
-        var accepted = await response.Content.ReadFromJsonAsync<RunAcceptedResponse>(JsonOptions);
-        Assert.NotNull(accepted);
-
-        var run = await WaitForCompletionAsync(accepted.RunId);
-        Assert.Equal(RunStatus.Succeeded, run.Status);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ContextBundleBuilt && stage.Status == RunStageStatus.Succeeded);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.ScenariosGenerated && stage.Status == RunStageStatus.Skipped);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.TestsGenerated && stage.Status == RunStageStatus.Skipped);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsValidated && stage.Status == RunStageStatus.Skipped);
-        Assert.Contains(run.Stages, stage => stage.Name == RunStageName.OutputsWritten && stage.Status == RunStageStatus.Skipped);
-
-        var artifactsResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts");
-        artifactsResponse.EnsureSuccessStatusCode();
-
-        var artifacts = await artifactsResponse.Content.ReadFromJsonAsync<RunArtifactsResponse>(JsonOptions);
-        Assert.NotNull(artifacts);
-        Assert.Contains(artifacts.Artifacts, artifact => artifact.Type == "GenerationContextBundleJson");
-        Assert.Contains(artifacts.Artifacts, artifact => artifact.Type == "LlmPromptJson");
-        Assert.DoesNotContain(artifacts.Artifacts, artifact => artifact.Type == "ScenarioJson");
-
-        var contextResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts/generation-context-bundle.json");
-        contextResponse.EnsureSuccessStatusCode();
-        var contextJson = await contextResponse.Content.ReadAsStringAsync();
-        Assert.Contains("\"metadata\"", contextJson);
-        Assert.Contains("\"sections\"", contextJson);
-
-        var promptResponse = await _client.GetAsync($"/api/runs/{accepted.RunId}/artifacts/llm-prompt.json");
-        promptResponse.EnsureSuccessStatusCode();
-        var promptJson = await promptResponse.Content.ReadAsStringAsync();
-        Assert.Contains("\"systemPrompt\"", promptJson);
-        Assert.Contains("\"userPrompt\"", promptJson);
-    }
-
-    private async Task<RunDetailsResponse> WaitForCompletionAsync(string runId)
+    private static async Task<RunDetailsResponse> WaitForCompletionAsync(HttpClient client, string runId)
     {
         for (var attempt = 0; attempt < 50; attempt++)
         {
-            var response = await _client.GetAsync($"/api/runs/{runId}");
+            var response = await client.GetAsync($"/api/runs/{runId}");
             response.EnsureSuccessStatusCode();
 
             var run = await response.Content.ReadFromJsonAsync<RunDetailsResponse>(JsonOptions);
@@ -284,25 +216,10 @@ public sealed class RunsApiTests : IClassFixture<MansoApiFactory>
     }
 
     private static RawRunRequest CreateRequest(
-        string generationMode = "ExecutableTests",
         string issueKey = "QA-1234",
-        string workflowPass = "ScenarioDesign",
-        bool dryRun = false)
+        string workflowPass = "ScenarioDesign")
         => new(
-            "JiraAutomation",
-            "Manual",
-            new RawIssuePayload(
-                issueKey,
-                "10001"),
-            new RawTriggerInputs(
-                generationMode,
-                workflowPass,
-                "https://yourcompany.atlassian.net/wiki/spaces/API/pages/67890/Callback+Contract",
-                "Regression",
-                "Both",
-                dryRun),
-            new RawRequester(
-                "abc-123",
-                "Manuel Marcatili",
-                "manuel@example.com"));
+            workflowPass,
+            issueKey,
+            "abc-123");
 }

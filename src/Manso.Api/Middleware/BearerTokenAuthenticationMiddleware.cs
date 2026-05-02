@@ -1,7 +1,7 @@
+using Microsoft.Extensions.Options;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
-using Microsoft.Extensions.Options;
 
 namespace Manso.Api;
 

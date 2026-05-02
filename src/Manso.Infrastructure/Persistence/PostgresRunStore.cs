@@ -48,48 +48,55 @@ public sealed class PostgresRunStore : IRunStore
     {
         ct.ThrowIfCancellationRequested();
 
-        await using var command = _dataSource.CreateCommand(
-            """
-            INSERT INTO agent_runs (
-                run_id,
-                issue_key,
-                status,
-                created_at_utc,
-                started_at_utc,
-                completed_at_utc,
-                correlation_id,
-                raw_request,
-                normalized_request,
-                repository_alias,
-                pull_request_reference,
-                pull_request_references,
-                stages,
-                warnings,
-                errors,
-                artifacts,
-                stored_artifacts)
-            VALUES (
-                @run_id,
-                @issue_key,
-                @status,
-                @created_at_utc,
-                @started_at_utc,
-                @completed_at_utc,
-                @correlation_id,
-                @raw_request,
-                @normalized_request,
-                @repository_alias,
-                @pull_request_reference,
-                @pull_request_references,
-                @stages,
-                @warnings,
-                @errors,
-                @artifacts,
-                @stored_artifacts);
-            """);
+        try
+        {
+            await using var command = _dataSource.CreateCommand(
+                """
+                INSERT INTO agent_runs (
+                    run_id,
+                    issue_key,
+                    status,
+                    created_at_utc,
+                    started_at_utc,
+                    completed_at_utc,
+                    correlation_id,
+                    raw_request,
+                    normalized_request,
+                    repository_alias,
+                    pull_request_reference,
+                    pull_request_references,
+                    stages,
+                    warnings,
+                    errors,
+                    artifacts,
+                    stored_artifacts)
+                VALUES (
+                    @run_id,
+                    @issue_key,
+                    @status,
+                    @created_at_utc,
+                    @started_at_utc,
+                    @completed_at_utc,
+                    @correlation_id,
+                    @raw_request,
+                    @normalized_request,
+                    @repository_alias,
+                    @pull_request_reference,
+                    @pull_request_references,
+                    @stages,
+                    @warnings,
+                    @errors,
+                    @artifacts,
+                    @stored_artifacts);
+                """);
 
-        BindRun(command, run);
-        await command.ExecuteNonQueryAsync(ct);
+            BindRun(command, run);
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        catch (PostgresException ex) when (IsDuplicateRunId(ex))
+        {
+            throw new RunAlreadyExistsException(run.RunId, ex);
+        }
 
         _logger.LogInformation(
             "Persisted run {RunId} to Postgres for issue {IssueKey}.",
@@ -112,6 +119,31 @@ public sealed class PostgresRunStore : IRunStore
         }
 
         return MapRun(reader);
+    }
+
+    public async Task<TestGenerationRun?> FindActiveAsync(
+        string issueKey,
+        WorkflowPass workflowPass,
+        string? repositoryAlias,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        await using var command = _dataSource.CreateCommand(
+            $"{SelectColumns} WHERE issue_key = @issue_key AND status IN ('Queued', 'Running') ORDER BY created_at_utc ASC;");
+        command.Parameters.AddWithValue("issue_key", issueKey);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var run = MapRun(reader);
+            if (MatchesActiveRun(run, issueKey, workflowPass, repositoryAlias))
+            {
+                return run;
+            }
+        }
+
+        return null;
     }
 
     public async Task UpdateAsync(string runId, Func<TestGenerationRun, TestGenerationRun> update, CancellationToken ct)
@@ -220,44 +252,111 @@ public sealed class PostgresRunStore : IRunStore
         });
     }
 
+    private static bool IsDuplicateRunId(PostgresException exception)
+        => exception.SqlState == PostgresErrorCodes.UniqueViolation &&
+           string.Equals(exception.ConstraintName, "agent_runs_pkey", StringComparison.OrdinalIgnoreCase);
+
     private TestGenerationRun MapRun(NpgsqlDataReader reader)
     {
-        var rawRequest = _serializer.Deserialize<RawRunRequest>(reader.GetString(7));
-        var normalizedRequest = reader.IsDBNull(8)
-            ? null
-            : _serializer.Deserialize<NormalizedRunRequest>(reader.GetString(8));
-        var pullRequestReferences = reader.IsDBNull(11)
-            ? Array.Empty<string>()
-            : _serializer.Deserialize<IReadOnlyList<string>>(reader.GetString(11));
-        var stages = _serializer.Deserialize<IReadOnlyList<RunStageRecord>>(reader.GetString(12));
-        var warnings = _serializer.Deserialize<IReadOnlyList<RunWarning>>(reader.GetString(13));
-        var errors = _serializer.Deserialize<IReadOnlyList<RunError>>(reader.GetString(14));
-        var artifacts = _serializer.Deserialize<IReadOnlyList<ArtifactReference>>(reader.GetString(15));
-        var storedArtifacts = reader.IsDBNull(16)
-            ? Array.Empty<StoredArtifact>()
-            : _serializer.Deserialize<IReadOnlyList<StoredArtifact>>(reader.GetString(16));
+        var columns = RunRecordColumns.From(reader);
+        var rawRequest = DeserializeJson<RawRunRequest>(reader, columns.RawRequest);
+        var normalizedRequest = DeserializeNullableJson<NormalizedRunRequest>(reader, columns.NormalizedRequest);
+        var pullRequestReferences = DeserializeNullableJson<IReadOnlyList<string>>(
+            reader,
+            columns.PullRequestReferences) ?? Array.Empty<string>();
+        var stages = DeserializeJson<IReadOnlyList<RunStageRecord>>(reader, columns.Stages);
+        var warnings = DeserializeJson<IReadOnlyList<RunWarning>>(reader, columns.Warnings);
+        var errors = DeserializeJson<IReadOnlyList<RunError>>(reader, columns.Errors);
+        var artifacts = DeserializeJson<IReadOnlyList<ArtifactReference>>(reader, columns.Artifacts);
+        var storedArtifacts = DeserializeNullableJson<IReadOnlyList<StoredArtifact>>(
+            reader,
+            columns.StoredArtifacts) ?? Array.Empty<StoredArtifact>();
 
         return new TestGenerationRun(
-            reader.GetString(0),
-            reader.GetString(1),
-            Enum.Parse<RunStatus>(reader.GetString(2), ignoreCase: true),
-            new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(3), DateTimeKind.Utc)),
-            reader.IsDBNull(4)
-                ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(4), DateTimeKind.Utc)),
-            reader.IsDBNull(5)
-                ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(5), DateTimeKind.Utc)),
-            reader.GetString(6),
+            reader.GetString(columns.RunId),
+            reader.GetString(columns.IssueKey),
+            Enum.Parse<RunStatus>(reader.GetString(columns.Status), ignoreCase: true),
+            GetUtcDateTimeOffset(reader, columns.CreatedAtUtc),
+            GetNullableUtcDateTimeOffset(reader, columns.StartedAtUtc),
+            GetNullableUtcDateTimeOffset(reader, columns.CompletedAtUtc),
+            reader.GetString(columns.CorrelationId),
             rawRequest,
             normalizedRequest,
-            reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.IsDBNull(10) ? null : reader.GetString(10),
+            GetNullableString(reader, columns.RepositoryAlias),
+            GetNullableString(reader, columns.PullRequestReference),
             pullRequestReferences,
             stages,
             warnings,
             errors,
             artifacts,
             storedArtifacts);
+    }
+
+    private T DeserializeJson<T>(NpgsqlDataReader reader, int ordinal)
+        => _serializer.Deserialize<T>(reader.GetString(ordinal));
+
+    private T? DeserializeNullableJson<T>(NpgsqlDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal)
+            ? default
+            : _serializer.Deserialize<T>(reader.GetString(ordinal));
+
+    private static string? GetNullableString(NpgsqlDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
+    private static DateTimeOffset GetUtcDateTimeOffset(NpgsqlDataReader reader, int ordinal)
+        => new(DateTime.SpecifyKind(reader.GetDateTime(ordinal), DateTimeKind.Utc));
+
+    private static DateTimeOffset? GetNullableUtcDateTimeOffset(NpgsqlDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : GetUtcDateTimeOffset(reader, ordinal);
+
+    private static bool MatchesActiveRun(
+        TestGenerationRun run,
+        string issueKey,
+        WorkflowPass workflowPass,
+        string? repositoryAlias)
+        => run.Status is RunStatus.Queued or RunStatus.Running &&
+           run.IssueKey.Equals(issueKey, StringComparison.OrdinalIgnoreCase) &&
+           run.NormalizedRequest is { } normalized &&
+           normalized.WorkflowPass == workflowPass &&
+           string.Equals(normalized.RepositoryAlias, repositoryAlias, StringComparison.OrdinalIgnoreCase);
+
+    private readonly record struct RunRecordColumns(
+        int RunId,
+        int IssueKey,
+        int Status,
+        int CreatedAtUtc,
+        int StartedAtUtc,
+        int CompletedAtUtc,
+        int CorrelationId,
+        int RawRequest,
+        int NormalizedRequest,
+        int RepositoryAlias,
+        int PullRequestReference,
+        int PullRequestReferences,
+        int Stages,
+        int Warnings,
+        int Errors,
+        int Artifacts,
+        int StoredArtifacts)
+    {
+        public static RunRecordColumns From(NpgsqlDataReader reader)
+            => new(
+                reader.GetOrdinal("run_id"),
+                reader.GetOrdinal("issue_key"),
+                reader.GetOrdinal("status"),
+                reader.GetOrdinal("created_at_utc"),
+                reader.GetOrdinal("started_at_utc"),
+                reader.GetOrdinal("completed_at_utc"),
+                reader.GetOrdinal("correlation_id"),
+                reader.GetOrdinal("raw_request"),
+                reader.GetOrdinal("normalized_request"),
+                reader.GetOrdinal("repository_alias"),
+                reader.GetOrdinal("pull_request_reference"),
+                reader.GetOrdinal("pull_request_references"),
+                reader.GetOrdinal("stages"),
+                reader.GetOrdinal("warnings"),
+                reader.GetOrdinal("errors"),
+                reader.GetOrdinal("artifacts"),
+                reader.GetOrdinal("stored_artifacts"));
     }
 }

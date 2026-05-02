@@ -223,7 +223,7 @@ public sealed class XrayTestCaseSyncServiceTests
             CancellationToken.None);
 
         Assert.NotNull(client.LastCreatedTestSetRequest);
-        Assert.Equal("bank-otp-api - Payments Test Set", client.LastCreatedTestSetRequest!.Summary);
+        Assert.Equal("SomeRepo - Payments Test Set", client.LastCreatedTestSetRequest!.Summary);
         Assert.Equal("QA-TS2", Assert.Single(result.Items).TestSetIssueKey);
     }
 
@@ -257,15 +257,10 @@ public sealed class XrayTestCaseSyncServiceTests
     private static NormalizedRunRequest CreateRequest(string issueKey = "QA-1234")
         => new(
             issueKey,
-            GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
-            "bank-otp-api",
-            Array.Empty<string>(),
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+            "SomeRepo",
+            "abc");
 
     private static JiraIssueContext CreateIssue(string issueKey = "QA-1234")
         => new(
@@ -317,22 +312,22 @@ public sealed class XrayTestCaseSyncServiceTests
 
         return new RepositoryContextBundle(
             new RepositoryTarget(
-                "bank-otp-api",
+                "SomeRepo",
                 "AzureDevOps",
-                "afs-dev",
-                "rps",
-                "bank-otp-api",
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api",
+                "SomeProject",
+                "SomeTeam",
+                "SomeRepo",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo",
                 "main",
                 "feature/qa-1234",
                 "main",
                 882,
-                "https://dev.azure.com/afs-dev/rps/_git/bank-otp-api/pullrequest/882",
+                "https://dev.azure.com/SomeProject/SomeTeam/_git/SomeRepo/pullrequest/882",
                 "source-sha",
                 "target-sha",
                 "test"),
             new RepositoryConventions(
-                "bank-otp-api",
+                "SomeRepo",
                 false,
                 "xUnit",
                 ".NET 10",
@@ -356,7 +351,7 @@ public sealed class XrayTestCaseSyncServiceTests
         public XrayTestSetCreateRequest? LastCreatedTestSetRequest { get; private set; }
         public IReadOnlyList<XrayTestSet> SearchTestSetsResult { get; init; } =
         [
-            new XrayTestSet("40001", "QA-TS1", "bank-otp-api - Callbacks Test Set"),
+            new XrayTestSet("40001", "QA-TS1", "SomeRepo - Callbacks Test Set"),
         ];
 
         public Task<IReadOnlyList<XrayTestCase>> SearchTestsAsync(
@@ -387,16 +382,6 @@ public sealed class XrayTestCaseSyncServiceTests
             LastCreatedTestSetRequest = request;
             return Task.FromResult(new XrayTestSetCreateResult("40002", "QA-TS2", true));
         }
-
-        public Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
-            XrayTestExecutionUploadRequest request,
-            CancellationToken ct)
-            => throw new NotSupportedException();
-
-        public Task AddTestsToTestPlanAsync(
-            XrayAssociationUpdateRequest request,
-            CancellationToken ct)
-            => throw new NotSupportedException();
 
         public Task AddTestsToTestSetAsync(
             XrayAssociationUpdateRequest request,

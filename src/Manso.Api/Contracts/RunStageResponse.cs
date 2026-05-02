@@ -7,4 +7,6 @@ public sealed record RunStageResponse(
     RunStageStatus Status,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset? CompletedAtUtc,
-    string? Details);
+    string? Details,
+    long? DurationMs,
+    IReadOnlyDictionary<string, string> Metrics);

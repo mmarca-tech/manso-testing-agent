@@ -65,7 +65,32 @@ public sealed record RepositoryContextBundle(
     IReadOnlyList<RepositoryFileChange> ChangedFiles,
     IReadOnlyList<NeighboringTestFile> NeighboringTests,
     string CombinedDiff,
-    IReadOnlyList<RunWarning> Warnings);
+    IReadOnlyList<RunWarning> Warnings)
+{
+    public IReadOnlyList<RepositoryGuidanceFile> GuidanceFiles { get; init; } = Array.Empty<RepositoryGuidanceFile>();
+
+    public int ProviderRequestCount { get; init; }
+}
+
+public sealed record RepositoryGuidanceFile(
+    string Path,
+    string Content);
+
+public static class RepositoryGuidancePaths
+{
+    public const string TestArchitecture = "/architecture/test-architecture.md";
+    public const string AiTestGeneration = "/docs/testing/ai-test-generation.md";
+    public const string MansoTestGeneration = "/.manso/testgen.md";
+    public const string RepoConventions = "/.manso/repo-conventions.json";
+
+    public static readonly IReadOnlyList<string> All =
+    [
+        TestArchitecture,
+        AiTestGeneration,
+        MansoTestGeneration,
+        RepoConventions,
+    ];
+}
 
 public sealed record RepositoryConventions(
     string AdapterAlias,
@@ -78,7 +103,10 @@ public sealed record RepositoryConventions(
     IReadOnlyList<string> BuildCommands,
     IReadOnlyList<string> TestCommands,
     IReadOnlyList<string> FormatterCommands,
-    string TestFileSuffix);
+    string TestFileSuffix)
+{
+    public IReadOnlyList<string> LinterCommands { get; init; } = Array.Empty<string>();
+}
 
 public sealed record RepositoryFileChange(
     string Path,

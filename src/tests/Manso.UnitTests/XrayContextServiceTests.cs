@@ -155,15 +155,10 @@ public sealed class XrayContextServiceTests
     private static NormalizedRunRequest CreateRequest(string issueKey = "QA-1234")
         => new(
             issueKey,
-            GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
-            "bank-otp-api",
-            Array.Empty<string>(),
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+            "SomeRepo",
+            "abc");
 
     private static JiraIssueContext CreateIssue(
         string issueKey = "QA-1234",
@@ -214,16 +209,6 @@ public sealed class XrayContextServiceTests
 
         public Task<XrayTestSetCreateResult> CreateTestSetAsync(
             XrayTestSetCreateRequest request,
-            CancellationToken ct)
-            => throw new NotSupportedException();
-
-        public Task<XrayTestExecutionUploadResult> UploadExecutionAsync(
-            XrayTestExecutionUploadRequest request,
-            CancellationToken ct)
-            => throw new NotSupportedException();
-
-        public Task AddTestsToTestPlanAsync(
-            XrayAssociationUpdateRequest request,
             CancellationToken ct)
             => throw new NotSupportedException();
 

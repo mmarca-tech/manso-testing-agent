@@ -1,8 +1,8 @@
+using Manso.Domain;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Manso.Domain;
-using Microsoft.Extensions.Logging;
 
 namespace Manso.Application;
 
@@ -142,7 +142,11 @@ public sealed class ScenarioGenerator : IScenarioGenerator
                 scenarios,
                 completion.Provider,
                 completion.Model,
-                completion.JsonOutput);
+                completion.JsonOutput)
+            {
+                Usage = completion.Usage,
+                ProviderRequestCount = completion.ProviderRequestCount,
+            };
         }
         catch (JsonException ex)
         {
@@ -199,10 +203,10 @@ public sealed class ScenarioGenerator : IScenarioGenerator
         ValidateExistingXrayIssueKey(scenario, context);
         ValidateAcceptanceCriteriaReferences(scenario, context);
 
-        if (!scenario.SuggestedLevel.Equals(context.Metadata.TestScope.ToString(), StringComparison.OrdinalIgnoreCase))
+        if (!scenario.SuggestedLevel.Equals(context.TestScope.ToString(), StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Scenario '{scenario.ScenarioId}' suggested level '{scenario.SuggestedLevel}' does not match requested scope '{context.Metadata.TestScope}'.");
+                $"Scenario '{scenario.ScenarioId}' suggested level '{scenario.SuggestedLevel}' does not match requested scope '{context.TestScope}'.");
         }
 
         ValidateDuplicateAssessment(scenario, existingCoverage);
@@ -225,7 +229,7 @@ public sealed class ScenarioGenerator : IScenarioGenerator
             return;
         }
 
-        var issueProjectKey = ExtractIssueProjectKey(context.Metadata.IssueKey);
+        var issueProjectKey = ExtractIssueProjectKey(context.IssueKey);
         var expectedPattern = $"^{Regex.Escape(issueProjectKey)}-\\d+$";
         if (!Regex.IsMatch(scenario.ExistingXrayIssueKey, expectedPattern, RegexOptions.IgnoreCase))
         {

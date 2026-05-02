@@ -14,7 +14,6 @@ public enum RunStageName
     TestsGenerated,
     OutputsValidated,
     OutputsWritten,
-    JiraUpdated,
 }
 
 public enum RunStageStatus

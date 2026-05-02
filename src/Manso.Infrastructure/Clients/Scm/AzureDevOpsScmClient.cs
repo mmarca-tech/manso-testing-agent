@@ -1,11 +1,10 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
 using Manso.Application;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text.Json;
 
 namespace Manso.Infrastructure;
 
@@ -20,6 +19,7 @@ public sealed class AzureDevOpsScmClient : IScmClient
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptions<ScmOptions> _options;
     private readonly ILogger<AzureDevOpsScmClient> _logger;
+    private readonly AsyncLocal<ProviderRequestCounter?> _providerRequestCounter = new();
 
     public AzureDevOpsScmClient(
         IHttpClientFactory httpClientFactory,
@@ -64,35 +64,57 @@ public sealed class AzureDevOpsScmClient : IScmClient
     {
         EnsureProviderSupported(target);
 
-        var diffResponse = target.PullRequestIds.Count > 1
-            ? await GetAggregatedPullRequestDiffAsync(target, options, conventions, ct)
-            : target.PullRequestId is not null
-                ? await GetPullRequestDiffAsync(target, options, conventions, ct)
-                : await GetBranchDiffAsync(target, options, conventions, ct);
+        var previousCounter = _providerRequestCounter.Value;
+        var counter = new ProviderRequestCounter();
+        _providerRequestCounter.Value = counter;
+        try
+        {
+            var diffResponse = target.PullRequestIds.Count > 1
+                ? await GetAggregatedPullRequestDiffAsync(target, options, conventions, ct)
+                : target.PullRequestId is not null
+                    ? await GetPullRequestDiffAsync(target, options, conventions, ct)
+                    : await GetBranchDiffAsync(target, options, conventions, ct);
 
-        return diffResponse;
+            return diffResponse with
+            {
+                ProviderRequestCount = counter.Count,
+            };
+        }
+        finally
+        {
+            _providerRequestCounter.Value = previousCounter;
+        }
     }
 
-    public async Task<RepositoryWriteExecutionResult> WriteAsync(
+    public async Task<IReadOnlyList<RepositoryGuidanceFile>> GetRepositoryFilesAsync(
         RepositoryTarget target,
-        RepositoryWritePlan plan,
+        IReadOnlyList<string> paths,
         CancellationToken ct)
     {
         EnsureProviderSupported(target);
 
-        var baseBranchHead = await GetBranchObjectIdAsync(target, plan.BaseBranch, ct);
-        var commitId = await CreateBranchPushAsync(target, plan, baseBranchHead, ct);
-        string? pullRequestUrl = null;
-
-        if (plan.CreateDraftPullRequest)
+        if (paths.Count == 0)
         {
-            pullRequestUrl = await CreateDraftPullRequestAsync(target, plan, ct);
+            return Array.Empty<RepositoryGuidanceFile>();
         }
 
-        return new RepositoryWriteExecutionResult(
-            plan.NewBranchName,
-            commitId,
-            pullRequestUrl);
+        var (version, versionType) = ResolveRepositoryFileVersion(target);
+        var files = new List<RepositoryGuidanceFile>();
+        foreach (var path in paths
+                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                     .Select(NormalizePath)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var content = await TryGetFileContentAsync(target, path, version, versionType, ct);
+            if (content is not null)
+            {
+                files.Add(new RepositoryGuidanceFile(path, content));
+            }
+        }
+
+        return files;
     }
 
     private async Task<RepositoryContextBundle> GetAggregatedPullRequestDiffAsync(
@@ -520,6 +542,27 @@ public sealed class AzureDevOpsScmClient : IScmClient
             : null;
     }
 
+    private static (string Version, string VersionType) ResolveRepositoryFileVersion(RepositoryTarget target)
+    {
+        if (!string.IsNullOrWhiteSpace(target.SourceCommitSha))
+        {
+            return (target.SourceCommitSha, "commit");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.BranchName))
+        {
+            return (target.BranchName, "branch");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.DefaultBranch))
+        {
+            return (target.DefaultBranch, "branch");
+        }
+
+        throw new InvalidOperationException(
+            $"Repository target '{target.Alias}' does not include a commit, branch, or default branch for file retrieval.");
+    }
+
     private async Task<IReadOnlyList<string>> ListPathsAsync(
         RepositoryTarget target,
         string scopePath,
@@ -560,6 +603,7 @@ public sealed class AzureDevOpsScmClient : IScmClient
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         _logger.LogInformation("Calling SCM API {Method} {Path}.", request.Method, request.RequestUri);
+        _providerRequestCounter.Value?.Increment();
         var client = _httpClientFactory.CreateClient("ScmApi");
         return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
     }
@@ -569,20 +613,6 @@ public sealed class AzureDevOpsScmClient : IScmClient
         var request = new HttpRequestMessage(method, relativePath);
         request.Headers.Authorization = BasicAuthenticationHeaderFactory.Create(string.Empty, _options.Value.ReadToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        return request;
-    }
-
-    private HttpRequestMessage CreateWriteRequest(HttpMethod method, string relativePath, string jsonBody)
-    {
-        if (string.IsNullOrWhiteSpace(_options.Value.WriteToken))
-        {
-            throw new InvalidOperationException("SCM write token is not configured.");
-        }
-
-        var request = new HttpRequestMessage(method, relativePath);
-        request.Headers.Authorization = BasicAuthenticationHeaderFactory.Create(string.Empty, _options.Value.WriteToken);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
         return request;
     }
 
@@ -615,15 +645,6 @@ public sealed class AzureDevOpsScmClient : IScmClient
            $"&targetVersionType={Uri.EscapeDataString(targetVersionType)}" +
            $"&$top={top}&$skip={skip}&api-version=7.1";
 
-    private static string BuildRefsPath(RepositoryTarget target, string branchName)
-        => $"{BuildRepositoryBasePath(target)}/refs?filter={Uri.EscapeDataString($"heads/{NormalizeBranchName(branchName)}")}&api-version=7.1";
-
-    private static string BuildPushesPath(RepositoryTarget target)
-        => $"{BuildRepositoryBasePath(target)}/pushes?api-version=7.1";
-
-    private static string BuildPullRequestsCreatePath(RepositoryTarget target)
-        => $"{BuildRepositoryBasePath(target)}/pullrequests?api-version=7.1";
-
     private static string NormalizeRefName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -635,9 +656,6 @@ public sealed class AzureDevOpsScmClient : IScmClient
             ? value["refs/heads/".Length..]
             : value;
     }
-
-    private static string NormalizeBranchName(string value)
-        => NormalizeRefName(value).Trim();
 
     private static RepositoryChangeKind MapChangeKind(string? value)
         => value?.ToLowerInvariant() switch
@@ -802,141 +820,6 @@ public sealed class AzureDevOpsScmClient : IScmClient
             ? value.GetString()
             : null;
 
-    private async Task<string> GetBranchObjectIdAsync(
-        RepositoryTarget target,
-        string branchName,
-        CancellationToken ct)
-    {
-        using var request = CreateRequest(HttpMethod.Get, BuildRefsPath(target, branchName));
-        using var response = await SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        var refs = document.RootElement.TryGetProperty("value", out var valueElement) &&
-                   valueElement.ValueKind == JsonValueKind.Array
-            ? valueElement.EnumerateArray().ToArray()
-            : Array.Empty<JsonElement>();
-
-        var expectedRefName = $"refs/heads/{NormalizeBranchName(branchName)}";
-        var matchingRef = refs.FirstOrDefault(reference =>
-            string.Equals(
-                reference.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
-                expectedRefName,
-                StringComparison.OrdinalIgnoreCase));
-
-        if (matchingRef.ValueKind != JsonValueKind.Object ||
-            !matchingRef.TryGetProperty("objectId", out var objectIdElement) ||
-            string.IsNullOrWhiteSpace(objectIdElement.GetString()))
-        {
-            throw new InvalidOperationException(
-                $"Base branch '{branchName}' was not found for repository '{target.Alias}'.");
-        }
-
-        return objectIdElement.GetString()!;
-    }
-
-    private async Task<string> CreateBranchPushAsync(
-        RepositoryTarget target,
-        RepositoryWritePlan plan,
-        string baseBranchHead,
-        CancellationToken ct)
-    {
-        var payload = new
-        {
-            refUpdates = new[]
-            {
-                new
-                {
-                    name = $"refs/heads/{NormalizeBranchName(plan.NewBranchName)}",
-                    oldObjectId = baseBranchHead,
-                },
-            },
-            commits = new[]
-            {
-                new
-                {
-                    comment = plan.CommitMessage,
-                    changes = plan.Files.Select(MapGeneratedFileChange).ToArray(),
-                },
-            },
-        };
-
-        using var request = CreateWriteRequest(
-            HttpMethod.Post,
-            BuildPushesPath(target),
-            JsonSerializer.Serialize(payload));
-        using var response = await SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        var commits = document.RootElement.TryGetProperty("commits", out var commitsElement) &&
-                      commitsElement.ValueKind == JsonValueKind.Array
-            ? commitsElement.EnumerateArray().ToArray()
-            : Array.Empty<JsonElement>();
-        string? commitId = null;
-        if (commits.Length > 0 &&
-            commits[0].TryGetProperty("commitId", out var commitIdElement))
-        {
-            commitId = commitIdElement.GetString();
-        }
-        if (string.IsNullOrWhiteSpace(commitId))
-        {
-            throw new InvalidOperationException(
-                $"SCM push for repository '{target.Alias}' did not return a commit identifier.");
-        }
-
-        return commitId;
-    }
-
-    private async Task<string?> CreateDraftPullRequestAsync(
-        RepositoryTarget target,
-        RepositoryWritePlan plan,
-        CancellationToken ct)
-    {
-        var payload = new
-        {
-            sourceRefName = $"refs/heads/{NormalizeBranchName(plan.NewBranchName)}",
-            targetRefName = $"refs/heads/{NormalizeBranchName(plan.BaseBranch)}",
-            title = plan.PullRequestTitle,
-            description = plan.PullRequestBody,
-            isDraft = true,
-        };
-
-        using var request = CreateWriteRequest(
-            HttpMethod.Post,
-            BuildPullRequestsCreatePath(target),
-            JsonSerializer.Serialize(payload));
-        using var response = await SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        var root = document.RootElement;
-
-        return root.TryGetProperty("url", out var urlElement) && !string.IsNullOrWhiteSpace(urlElement.GetString())
-            ? urlElement.GetString()
-            : root.TryGetProperty("pullRequestId", out var pullRequestIdElement) && pullRequestIdElement.TryGetInt32(out var pullRequestId)
-                ? $"{target.RepositoryUrl.TrimEnd('/')}/pullrequest/{pullRequestId}"
-                : null;
-    }
-
-    private static object MapGeneratedFileChange(GeneratedFile file)
-        => new
-        {
-            changeType = file.Action == GeneratedFileAction.Create ? "add" : "edit",
-            item = new
-            {
-                path = file.Path,
-            },
-            newContent = new
-            {
-                content = file.Content,
-                contentType = "rawtext",
-            },
-        };
-
     private sealed record DiffFetchResult(
         IReadOnlyList<RepositoryFileChange> ChangedFiles,
         IReadOnlyList<RunWarning> Warnings);
@@ -945,4 +828,12 @@ public sealed class AzureDevOpsScmClient : IScmClient
         string PullRequestReference,
         int PullRequestId,
         RepositoryFileChange Change);
+
+    private sealed class ProviderRequestCounter
+    {
+        public int Count { get; private set; }
+
+        public void Increment()
+            => Count++;
+    }
 }

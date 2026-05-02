@@ -1,7 +1,7 @@
-using System.Text;
-using System.Text.RegularExpressions;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Manso.Application;
 
@@ -45,7 +45,9 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
     {
         var items = new List<XrayScenarioSyncItem>();
         var warnings = new List<RunWarning>();
-        var componentTestSet = await ResolveComponentTestSetAsync(request, issue, repositoryContext, warnings, ct);
+        var componentTestSetResolution = await ResolveComponentTestSetAsync(request, issue, repositoryContext, warnings, ct);
+        var componentTestSet = componentTestSetResolution.TestSet;
+        var providerRequestCount = componentTestSetResolution.ProviderRequestCount;
 
         foreach (var scenario in scenarios.Scenarios)
         {
@@ -69,12 +71,15 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
             }
 
             var upsertRequest = BuildUpsertRequest(issue, scenario, match.TestCase);
+            providerRequestCount++;
             var result = await _xrayApiClient.UpsertTestCaseAsync(upsertRequest, ct);
             var action = upsertRequest.ExistingIssueId is null ? "Created" : "Updated";
 
+            providerRequestCount++;
             await _jiraApiClient.EnsureTestCoverageLinkAsync(issue.IssueKey, result.IssueKey, ct);
             if (componentTestSet is not null)
             {
+                providerRequestCount++;
                 await _xrayApiClient.AddTestsToTestSetAsync(
                     new XrayAssociationUpdateRequest(
                         componentTestSet.IssueId,
@@ -101,7 +106,10 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
             items.Count(item => item.Action is "Created" or "Updated"),
             warnings.Count);
 
-        return new XrayScenarioSyncResult(items, warnings);
+        return new XrayScenarioSyncResult(items, warnings)
+        {
+            ProviderRequestCount = providerRequestCount,
+        };
     }
 
     private XrayTestCaseUpsertRequest BuildUpsertRequest(
@@ -214,7 +222,7 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
         return steps;
     }
 
-    private async Task<XrayTestSet?> ResolveComponentTestSetAsync(
+    private async Task<ComponentTestSetResolution> ResolveComponentTestSetAsync(
         NormalizedRunRequest request,
         JiraIssueContext issue,
         RepositoryContextBundle? repositoryContext,
@@ -227,7 +235,7 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
             warnings.Add(new RunWarning(
                 "xray_component_not_inferred",
                 "Skipping Xray test-set assignment because no stable component could be inferred from repository paths."));
-            return null;
+            return new ComponentTestSetResolution(null, 0);
         }
 
         var projectKey = ResolveProjectKey(issue.IssueKey);
@@ -238,18 +246,20 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
         var searchRequest = new XrayTestSetSearchRequest(
             $"project = {projectKey} AND issuetype = \"Test Set\" AND summary ~ \"\\\"{EscapeJqlLiteral(testSetSummary)}\\\"\" ORDER BY updated DESC",
             5);
+        var providerRequestCount = 1;
         var existing = await _xrayApiClient.SearchTestSetsAsync(searchRequest, ct);
         var exactMatch = existing.FirstOrDefault(testSet =>
             testSet.Summary.Equals(testSetSummary, StringComparison.OrdinalIgnoreCase));
         if (exactMatch is not null)
         {
-            return exactMatch;
+            return new ComponentTestSetResolution(exactMatch, providerRequestCount);
         }
 
         var labels = issue.Labels
             .Concat(["ai-testgen", BuildComponentLabel(componentName)])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        providerRequestCount++;
         var created = await _xrayApiClient.CreateTestSetAsync(
             new XrayTestSetCreateRequest(
                 projectKey,
@@ -258,7 +268,9 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
                 labels),
             ct);
 
-        return new XrayTestSet(created.IssueId, created.IssueKey, testSetSummary);
+        return new ComponentTestSetResolution(
+            new XrayTestSet(created.IssueId, created.IssueKey, testSetSummary),
+            providerRequestCount);
     }
 
     private static string? InferComponentName(RepositoryContextBundle? repositoryContext)
@@ -445,4 +457,8 @@ public sealed class XrayTestCaseSyncService : IXrayTestCaseSyncService
     private sealed record MatchResult(
         MatchKind Kind,
         XrayTestCase? TestCase);
+
+    private sealed record ComponentTestSetResolution(
+        XrayTestSet? TestSet,
+        int ProviderRequestCount);
 }

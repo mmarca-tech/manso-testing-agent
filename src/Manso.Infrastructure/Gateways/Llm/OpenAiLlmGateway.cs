@@ -1,10 +1,11 @@
-using System.Net.Http.Headers;
-using System.Diagnostics;
-using System.Text;
-using System.Text.Json;
 using Manso.Application;
+using Manso.Domain;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 
 namespace Manso.Infrastructure;
 
@@ -52,21 +53,35 @@ public sealed class OpenAiLlmGateway : ILlmGateway
         var responseBody = await EnsureSuccessAndReadBodyAsync(client, response, ct);
         using var document = JsonDocument.Parse(responseBody);
 
-        var finalRoot = usesResponsesApi && usesBackgroundMode
-            ? await PollBackgroundResponseAsync(client, document.RootElement, ct)
-            : document.RootElement.Clone();
+        var providerRequestCount = 1;
+        JsonElement finalRoot;
+        if (usesResponsesApi && usesBackgroundMode)
+        {
+            var backgroundResult = await PollBackgroundResponseAsync(client, document.RootElement, ct);
+            finalRoot = backgroundResult.Root;
+            providerRequestCount += backgroundResult.ProviderRequestCount;
+        }
+        else
+        {
+            finalRoot = document.RootElement.Clone();
+        }
 
         var content = ExtractContent(finalRoot, finalRoot.GetRawText(), usesResponsesApi);
 
-        return new LlmCompletionResult("OpenAi", options.Model, content);
+        return new LlmCompletionResult("OpenAi", options.Model, content)
+        {
+            Usage = ExtractUsage(finalRoot),
+            ProviderRequestCount = providerRequestCount,
+        };
     }
 
-    private async Task<JsonElement> PollBackgroundResponseAsync(
+    private async Task<BackgroundResponseResult> PollBackgroundResponseAsync(
         HttpClient client,
         JsonElement initialRoot,
         CancellationToken ct)
     {
         var currentRoot = initialRoot.Clone();
+        var providerRequestCount = 0;
         var timeout = TimeSpan.FromSeconds(Math.Max(1, _options.Value.RequestTimeoutSeconds));
         var stopwatch = Stopwatch.StartNew();
         while (IsBackgroundResponsePending(currentRoot))
@@ -84,6 +99,7 @@ public sealed class OpenAiLlmGateway : ILlmGateway
             pollRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.Value.ApiKey);
 
             using var pollResponse = await client.SendAsync(pollRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+            providerRequestCount++;
             var pollBody = await EnsureSuccessAndReadBodyAsync(client, pollResponse, ct);
             using var pollDocument = JsonDocument.Parse(pollBody);
             currentRoot = pollDocument.RootElement.Clone();
@@ -95,7 +111,7 @@ public sealed class OpenAiLlmGateway : ILlmGateway
                 $"OpenAI background response finished with status '{GetResponseStatus(currentRoot) ?? "unknown"}'. response={SummarizeErrorBody(currentRoot.GetRawText())}");
         }
 
-        return currentRoot;
+        return new BackgroundResponseResult(currentRoot, providerRequestCount);
     }
 
     private static Dictionary<string, object?> BuildChatCompletionsPayload(
@@ -329,20 +345,45 @@ public sealed class OpenAiLlmGateway : ILlmGateway
             : builder.ToString();
     }
 
-    private static int? TryReadReasoningTokens(JsonElement root)
+    internal static LlmUsageMetrics? ExtractUsage(JsonElement root)
     {
         if (!root.TryGetProperty("usage", out var usageElement) ||
-            usageElement.ValueKind != JsonValueKind.Object ||
-            !usageElement.TryGetProperty("completion_tokens_details", out var completionDetailsElement) ||
-            completionDetailsElement.ValueKind != JsonValueKind.Object ||
-            !completionDetailsElement.TryGetProperty("reasoning_tokens", out var reasoningTokensElement) ||
-            reasoningTokensElement.ValueKind != JsonValueKind.Number)
+            usageElement.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
 
-        return reasoningTokensElement.GetInt32();
+        var inputTokens = TryReadInt(usageElement, "input_tokens")
+                          ?? TryReadInt(usageElement, "prompt_tokens");
+        var outputTokens = TryReadInt(usageElement, "output_tokens")
+                           ?? TryReadInt(usageElement, "completion_tokens");
+        var totalTokens = TryReadInt(usageElement, "total_tokens");
+        var reasoningTokens = TryReadNestedInt(usageElement, "output_tokens_details", "reasoning_tokens")
+                              ?? TryReadNestedInt(usageElement, "completion_tokens_details", "reasoning_tokens");
+
+        return inputTokens is null &&
+               outputTokens is null &&
+               totalTokens is null &&
+               reasoningTokens is null
+            ? null
+            : new LlmUsageMetrics(inputTokens, outputTokens, totalTokens, reasoningTokens);
     }
+
+    private static int? TryReadReasoningTokens(JsonElement root)
+        => ExtractUsage(root)?.ReasoningTokens;
+
+    private static int? TryReadInt(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var valueElement) &&
+           valueElement.ValueKind == JsonValueKind.Number &&
+           valueElement.TryGetInt32(out var value)
+            ? value
+            : null;
+
+    private static int? TryReadNestedInt(JsonElement element, string propertyName, string childPropertyName)
+        => element.TryGetProperty(propertyName, out var childElement) &&
+           childElement.ValueKind == JsonValueKind.Object
+            ? TryReadInt(childElement, childPropertyName)
+            : null;
 
     private static bool IsBackgroundResponsePending(JsonElement root)
         => GetResponseStatus(root) is "queued" or "in_progress";
@@ -377,4 +418,8 @@ public sealed class OpenAiLlmGateway : ILlmGateway
            (root.TryGetProperty("output", out var outputElement) &&
             outputElement.ValueKind == JsonValueKind.Array &&
             outputElement.GetArrayLength() > 0);
+
+    private sealed record BackgroundResponseResult(
+        JsonElement Root,
+        int ProviderRequestCount);
 }

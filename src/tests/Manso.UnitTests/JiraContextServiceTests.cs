@@ -107,15 +107,10 @@ public sealed class JiraContextServiceTests
     private static NormalizedRunRequest CreateRequest()
         => new(
             "QA-1234",
-            GenerationMode.TestCasesOnly,
             WorkflowPass.ScenarioDesign,
             TestScope.Api,
-            "bank-otp-api",
-            Array.Empty<string>(),
-            CoverageIntent.Regression,
-            OutputTarget.JiraComment,
-            new RequestedBy("abc", "Manuel", "manuel@example.com"),
-            DocumentationMode.ExplicitOnly);
+            "SomeRepo",
+            "abc");
 
     private sealed class StubJiraApiClient : IJiraApiClient
     {

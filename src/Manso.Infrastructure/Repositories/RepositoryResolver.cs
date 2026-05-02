@@ -22,9 +22,9 @@ public sealed class RepositoryResolver : IRepositoryResolver
         NormalizedRunRequest request,
         CancellationToken ct)
     {
-        var baseTarget = ResolveRepositoryTarget(issue, request.RepositoryAlias, request.WorkflowPass);
+        var baseTarget = ResolveRepositoryTarget(issue, request.RepositoryAlias);
 
-        var developmentHint = ResolveHintFromDevelopmentInformation(baseTarget, issue, request);
+        var developmentHint = ResolveHintFromDevelopmentInformation(baseTarget, issue);
         var hint = developmentHint.Hint;
         var aggregatePullRequestHints = developmentHint.AggregatePullRequestHints ?? Array.Empty<string>();
         var unavailableReason = developmentHint.UnavailableReason;
@@ -124,8 +124,7 @@ public sealed class RepositoryResolver : IRepositoryResolver
 
     private RepositoryTarget ResolveRepositoryTarget(
         JiraIssueContext issue,
-        string? requestedAlias,
-        WorkflowPass workflowPass)
+        string? requestedAlias)
     {
         if (issue.DevelopmentRepositories.Count == 0)
         {
@@ -162,7 +161,7 @@ public sealed class RepositoryResolver : IRepositoryResolver
         {
             var repositoriesWithUsablePullRequests = issue.DevelopmentRepositories
                 .Where(repository => repository.PullRequests.Any(pullRequest =>
-                    IsUsablePullRequestStatus(pullRequest.Status, workflowPass) &&
+                    IsUsablePullRequestStatus(pullRequest.Status) &&
                     !string.IsNullOrWhiteSpace(pullRequest.Url)))
                 .ToArray();
             if (repositoriesWithUsablePullRequests.Length == 1)
@@ -266,8 +265,7 @@ public sealed class RepositoryResolver : IRepositoryResolver
 
     private DevelopmentHintResolution ResolveHintFromDevelopmentInformation(
         RepositoryTarget target,
-        JiraIssueContext issue,
-        NormalizedRunRequest request)
+        JiraIssueContext issue)
     {
         if (issue.DevelopmentRepositories.Count == 0)
         {
@@ -299,7 +297,7 @@ public sealed class RepositoryResolver : IRepositoryResolver
 
         var usablePullRequests = matchingRepositories
             .SelectMany(repository => repository.PullRequests)
-            .Where(pullRequest => IsUsablePullRequestStatus(pullRequest.Status, request.WorkflowPass))
+            .Where(pullRequest => IsUsablePullRequestStatus(pullRequest.Status))
             .Where(pullRequest => !string.IsNullOrWhiteSpace(pullRequest.Url))
             .GroupBy(pullRequest => pullRequest.Url, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
@@ -322,15 +320,14 @@ public sealed class RepositoryResolver : IRepositoryResolver
         if (usablePullRequests.Length > 1)
         {
             _logger.LogInformation(
-                "{WorkflowPass} aggregated usable Jira development pull requests for repository {RepositoryName} on issue {IssueKey}. PullRequestUrls: {PullRequestUrls}",
-                request.WorkflowPass,
+                "Aggregated usable Jira development pull requests for repository {RepositoryName} on issue {IssueKey}. PullRequestUrls: {PullRequestUrls}",
                 target.RepositoryName,
                 issue.IssueKey,
                 usablePullRequests.Select(pullRequest => pullRequest.Url).ToArray());
             return new DevelopmentHintResolution(
                 null,
                 null,
-                "jira_development_merged_pull_request_aggregate",
+                "jira_development_pull_request_aggregate",
                 usablePullRequests
                     .OrderBy(pullRequest => pullRequest.LastUpdatedUtc ?? DateTimeOffset.MinValue)
                     .ThenBy(pullRequest => pullRequest.Url, StringComparer.OrdinalIgnoreCase)
@@ -490,15 +487,8 @@ public sealed class RepositoryResolver : IRepositoryResolver
         return "main";
     }
 
-    private static bool IsUsablePullRequestStatus(string? status, WorkflowPass workflowPass)
-        => workflowPass == WorkflowPass.ScenarioDesign
-            ? !IsRejectedOrAbandonedPullRequestStatus(status)
-            : IsMergedPullRequestStatus(status);
-
-    private static bool IsMergedPullRequestStatus(string? status)
-        => status is not null &&
-           (status.Equals("MERGED", StringComparison.OrdinalIgnoreCase) ||
-            status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase));
+    private static bool IsUsablePullRequestStatus(string? status)
+        => !IsRejectedOrAbandonedPullRequestStatus(status);
 
     private static bool IsRejectedOrAbandonedPullRequestStatus(string? status)
         => status is not null &&

@@ -11,6 +11,6 @@ Examples:
 Current files:
 
 - `agent-personality.md`
-- `executable-generation-guardrails.md`
+- `scenario-generation-guardrails.md`
 
 Keep implementation planning documents in `implementation-plan/`.

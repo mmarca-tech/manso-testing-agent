@@ -1,6 +1,6 @@
-using System.Text;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace Manso.Application;
 
@@ -32,15 +32,6 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
         ct.ThrowIfCancellationRequested();
 
         var warnings = new List<RunWarning>();
-        var metadata = new RunMetadataContext(
-            request.IssueKey,
-            request.GenerationMode,
-            request.TestScope,
-            request.CoverageIntent,
-            request.OutputTarget,
-            repositoryTarget?.Alias ?? request.RepositoryAlias,
-            repositoryTarget?.PullRequestReference,
-            repositoryTarget);
         var sections = new List<GenerationContextSection>
         {
             new("run_metadata", "RUN METADATA", BuildRunMetadataSection(request, repositoryTarget)),
@@ -79,9 +70,12 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
         AddSectionIfNotEmpty(sections, "existing_xray_coverage_index", "EXISTING XRAY COVERAGE INDEX", BuildExistingCoverageIndexSection(jira, xrayContext));
         AddSectionIfNotEmpty(sections, "existing_linked_xray_tests", "EXISTING LINKED XRAY TESTS", BuildLinkedXrayTestsSection(jira, xrayContext));
         AddSectionIfNotEmpty(sections, "xray_neighboring_tests", "XRAY NEIGHBORING TESTS", BuildXrayTestsSection(xrayContext));
+        AddRepositoryGuidanceSections(sections, repositoryContext);
         AddSectionIfNotEmpty(sections, "repo_test_conventions", "REPO TEST CONVENTIONS", BuildRepositoryConventionsSection(repositoryContext));
 
-        var runtimeGuardrailsSection = _runtimePromptSectionProvider.BuildScenarioGenerationSection(metadata);
+        var runtimeGuardrailsSection = _runtimePromptSectionProvider.BuildScenarioGenerationSection(
+            request.TestScope,
+            request.WorkflowPass);
         if (!string.IsNullOrWhiteSpace(runtimeGuardrailsSection.Content))
         {
             sections.Add(runtimeGuardrailsSection);
@@ -93,9 +87,14 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
             BuildOutputContractSection(request)));
 
         var bundle = new GenerationContextBundle(
-            metadata,
+            request.IssueKey,
+            request.TestScope,
+            request.WorkflowPass,
             sections,
-            warnings.Concat(xrayContext.Warnings).ToArray(),
+            warnings
+                .Concat(repositoryContext?.Warnings ?? Array.Empty<RunWarning>())
+                .Concat(xrayContext.Warnings)
+                .ToArray(),
             documents.Count,
             repositoryContext?.ChangedFiles.Count ?? 0,
             repositoryContext?.NeighboringTests.Count ?? 0,
@@ -115,11 +114,8 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
     {
         var builder = new StringBuilder();
         builder.AppendLine($"Issue Key: {request.IssueKey}");
-        builder.AppendLine($"Generation Mode: {request.GenerationMode}");
+        builder.AppendLine($"Workflow Pass: {request.WorkflowPass}");
         builder.AppendLine($"Test Scope: {request.TestScope}");
-        builder.AppendLine($"Coverage Intent: {request.CoverageIntent}");
-        builder.AppendLine($"Output Target: {request.OutputTarget}");
-        builder.AppendLine($"Documentation Mode: {request.DocumentationMode}");
         builder.AppendLine($"Repository Alias: {repositoryTarget?.Alias ?? request.RepositoryAlias ?? "Not available"}");
         builder.Append($"Pull Request Reference: {FormatPullRequestReferences(repositoryTarget)}");
         return builder.ToString().Trim();
@@ -275,6 +271,69 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
         return builder.ToString().Trim();
     }
 
+    private static void AddRepositoryGuidanceSections(
+        ICollection<GenerationContextSection> sections,
+        RepositoryContextBundle? repositoryContext)
+    {
+        if (repositoryContext is null || repositoryContext.GuidanceFiles.Count == 0)
+        {
+            return;
+        }
+
+        AddGuidanceSectionIfPresent(
+            sections,
+            repositoryContext,
+            RepositoryGuidancePaths.TestArchitecture,
+            "repo_test_architecture",
+            "REPO TEST ARCHITECTURE");
+        AddGuidanceSectionIfPresent(
+            sections,
+            repositoryContext,
+            RepositoryGuidancePaths.AiTestGeneration,
+            "repo_generation_guidance",
+            "REPO AI TEST GENERATION GUIDANCE");
+        AddGuidanceSectionIfPresent(
+            sections,
+            repositoryContext,
+            RepositoryGuidancePaths.MansoTestGeneration,
+            "repo_manso_testgen",
+            "REPO MANSO TESTGEN GUIDANCE");
+        AddGuidanceSectionIfPresent(
+            sections,
+            repositoryContext,
+            RepositoryGuidancePaths.RepoConventions,
+            "repo_conventions_json",
+            "REPO CONVENTIONS JSON");
+    }
+
+    private static void AddGuidanceSectionIfPresent(
+        ICollection<GenerationContextSection> sections,
+        RepositoryContextBundle repositoryContext,
+        string path,
+        string key,
+        string title)
+    {
+        var file = repositoryContext.GuidanceFiles.FirstOrDefault(candidate =>
+            NormalizeGuidancePath(candidate.Path).Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (file is null || string.IsNullOrWhiteSpace(file.Content))
+        {
+            return;
+        }
+
+        sections.Add(new GenerationContextSection(
+            key,
+            title,
+            $"Source: {file.Path}{Environment.NewLine}{Environment.NewLine}{file.Content.Trim()}"));
+    }
+
+    private static string NormalizeGuidancePath(string path)
+    {
+        var normalized = path.Replace('\\', '/').Trim();
+        return normalized.StartsWith("/", StringComparison.Ordinal)
+            ? normalized
+            : $"/{normalized}";
+    }
+
     private static string BuildRepositoryConventionsSection(RepositoryContextBundle? repositoryContext)
     {
         if (repositoryContext is null)
@@ -294,7 +353,8 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
         builder.AppendLine($"Protected Paths: {FormatOrDefault(conventions.ProtectedPathPrefixes)}");
         builder.AppendLine($"Build Commands: {FormatOrDefault(conventions.BuildCommands)}");
         builder.AppendLine($"Test Commands: {FormatOrDefault(conventions.TestCommands)}");
-        builder.Append($"Formatter Commands: {FormatOrDefault(conventions.FormatterCommands)}");
+        builder.AppendLine($"Formatter Commands: {FormatOrDefault(conventions.FormatterCommands)}");
+        builder.Append($"Linter Commands: {FormatOrDefault(conventions.LinterCommands)}");
         return builder.ToString().Trim();
     }
 
@@ -402,9 +462,8 @@ public sealed class GenerationContextBundleBuilder : IGenerationContextBundleBui
     {
         var builder = new StringBuilder();
         builder.AppendLine("Return structured JSON only in later generation stages.");
-        builder.AppendLine($"Requested scope: {request.TestScope}");
-        builder.AppendLine($"Requested coverage intent: {request.CoverageIntent}");
-        builder.Append($"Generation mode: {request.GenerationMode}");
+        builder.AppendLine($"Workflow pass: {request.WorkflowPass}");
+        builder.Append($"Requested scope: {request.TestScope}");
         return builder.ToString().Trim();
     }
 

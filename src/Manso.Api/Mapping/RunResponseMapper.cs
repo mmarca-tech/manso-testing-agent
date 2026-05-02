@@ -20,7 +20,9 @@ public static class RunResponseMapper
                 stage.Status,
                 stage.StartedAtUtc,
                 stage.CompletedAtUtc,
-                stage.Details)).ToArray(),
+                stage.Details,
+                stage.DurationMs,
+                stage.Metrics)).ToArray(),
             run.Warnings.ToArray(),
             run.Errors.ToArray());
 

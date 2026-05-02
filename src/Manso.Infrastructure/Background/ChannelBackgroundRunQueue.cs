@@ -1,5 +1,5 @@
-using System.Threading.Channels;
 using Manso.Application;
+using System.Threading.Channels;
 
 namespace Manso.Infrastructure;
 

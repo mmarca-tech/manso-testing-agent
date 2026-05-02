@@ -1,6 +1,6 @@
-using System.Text.RegularExpressions;
 using Manso.Domain;
 using Microsoft.Extensions.Logging;
+using System.Text.RegularExpressions;
 
 namespace Manso.Application;
 
@@ -43,10 +43,13 @@ public sealed class XrayContextService : IXrayContextService
         }
 
         var tests = new List<XrayTestCase>();
-        foreach (var searchRequest in BuildSearchRequests(request, issue, jql))
+        var providerRequestCount = 0;
+        var searchRequests = BuildSearchRequests(request, issue, jql);
+        foreach (var searchRequest in searchRequests)
         {
             ct.ThrowIfCancellationRequested();
 
+            providerRequestCount++;
             var results = await _xrayApiClient.SearchTestsAsync(searchRequest, ct);
             tests.AddRange(results);
         }
@@ -62,7 +65,10 @@ public sealed class XrayContextService : IXrayContextService
             request.IssueKey,
             jql);
 
-        return new XrayContextBundle(deduplicated, Array.Empty<RunWarning>());
+        return new XrayContextBundle(deduplicated, Array.Empty<RunWarning>())
+        {
+            ProviderRequestCount = providerRequestCount,
+        };
     }
 
     private IReadOnlyList<XrayTestSearchRequest> BuildSearchRequests(

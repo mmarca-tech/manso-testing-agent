@@ -4,4 +4,9 @@ public sealed record GeneratedScenarioBundle(
     IReadOnlyList<GeneratedScenario> Scenarios,
     string ModelProvider,
     string ModelName,
-    string RawJson);
+    string RawJson)
+{
+    public LlmUsageMetrics? Usage { get; init; }
+
+    public int ProviderRequestCount { get; init; }
+}

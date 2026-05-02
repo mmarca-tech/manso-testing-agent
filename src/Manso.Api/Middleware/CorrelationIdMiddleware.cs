@@ -25,9 +25,9 @@ public sealed class CorrelationIdMiddleware
         context.Response.Headers[CorrelationIdHeaderName] = correlationId;
 
         using (_logger.BeginScope(new Dictionary<string, object?>
-               {
-                   ["CorrelationId"] = correlationId,
-               }))
+        {
+            ["CorrelationId"] = correlationId,
+        }))
         {
             await _next(context);
         }
