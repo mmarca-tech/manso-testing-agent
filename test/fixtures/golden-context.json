@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "1.0.0",
+  "ticket": {
+    "key": "DEMO-1",
+    "title": "Demo context pack",
+    "issueType": "Story",
+    "status": "Done",
+    "labels": [
+      "agent"
+    ],
+    "components": [
+      "Workflow"
+    ],
+    "url": "https://jira.example/browse/DEMO-1",
+    "links": []
+  },
+  "description": {
+    "format": "text",
+    "text": "Build the extractor."
+  },
+  "comments": [
+    {
+      "id": "10000",
+      "author": {
+        "name": "Reviewer"
+      },
+      "createdAt": "2026-05-02T12:30:00.000Z",
+      "body": "Looks ready for the next workflow agent."
+    }
+  ],
+  "attachments": [
+    {
+      "id": "30000",
+      "filename": "workflow-sketch.png",
+      "mimeType": "image/png",
+      "sizeBytes": 2048,
+      "url": "https://jira.example/secure/attachment/30000/workflow-sketch.png"
+    }
+  ],
+  "xrayTestCases": [],
+  "development": {
+    "branches": [
+      {
+        "name": "feature/DEMO-1",
+        "repository": "workflow",
+        "url": "https://git.example/workflow/branches/feature-DEMO-1"
+      }
+    ],
+    "pullRequests": [
+      {
+        "title": "Add context extractor",
+        "status": "MERGED",
+        "url": "https://git.example/workflow/pulls/10",
+        "repository": "workflow",
+        "sourceBranch": "feature/DEMO-1",
+        "targetBranch": "main",
+        "author": {
+          "name": "Developer"
+        },
+        "lastUpdatedAt": "2026-05-02T13:00:00.000Z"
+      }
+    ]
+  },
+  "confluencePages": [
+    {
+      "id": "20000",
+      "title": "Workflow Design",
+      "space": "ENG",
+      "url": "https://wiki.example/pages/20000",
+      "updatedAt": "2026-05-02T11:00:00.000Z",
+      "body": "The extractor prepares a strict context pack."
+    }
+  ],
+  "provenance": {
+    "generatedAt": "2026-05-02T14:00:00.000Z",
+    "issueKey": "DEMO-1",
+    "source": "jira-rest",
+    "tools": [
+      {
+        "method": "getIssue",
+        "toolName": "jira-rest:issue",
+        "calledAt": "2026-05-02T14:00:00.000Z",
+        "success": true
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "section": "confluencePages",
+      "toolName": "confluence-rest:content",
+      "message": "One linked page did not include body content."
+    }
+  ]
+}

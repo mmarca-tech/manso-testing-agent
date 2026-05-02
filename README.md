@@ -1,284 +1,308 @@
-# Jira-Triggered AI Test Generation Agent
+# Manso Testing Agent
 
-Deterministic ASP.NET Core/.NET 10 service for Jira-triggered test-design runs.
+TypeScript/Node CLI workflow for turning one Jira ticket into downstream context, review, and Xray test-generation packs. The implementation is intentionally a bounded workflow: collect fixed data, validate JSON with Zod, render Markdown from the same validated JSON, and optionally apply Xray/Jira mutations.
 
-The current implementation accepts a Jira Automation-style webhook, normalizes the request, retrieves bounded context from Jira, explicit Confluence links found in the Jira issue, Azure DevOps, and optional Xray coverage, generates candidate scenarios through a replaceable LLM gateway, validates the result, and stores run artifacts for later inspection.
+The project uses first-party Atlassian REST/GraphQL, Azure DevOps REST for PR diffs, Xray Cloud GraphQL, and OpenAI for bounded summaries/plans. It does not use Rovo or a Jira MCP server.
 
-![Gateway flow](docs/flow.png)
+## Quick Start
 
-## Current Status
+Install dependencies:
 
-Implemented end-to-end today:
+```powershell
+npm install
+```
 
-- bearer-token protected `POST /api/runs` intake
-- background run queue with persisted run state
-- Jira issue retrieval with comments and linked-issue context
-- explicit Confluence page retrieval only
-- Azure DevOps repository, pull request, diff, and neighboring test retrieval
-- Xray neighboring test lookup
-- scenario generation through pluggable LLM gateways
-- deterministic output validation
-- artifact listing and artifact download endpoints
-- optional Xray scenario auto-upsert for scenario-design test cases
+Set local secrets in `.env` or provide the same variables through CI/Kubernetes secrets. Then run the whole workflow:
 
-Not implemented in the current runtime flow:
+```powershell
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
+```
 
-- Jira writeback stage
-- executable test code generation
-- repository branch push and draft PR creation from generated code
-- Xray test execution upload with test-plan/test-set association
-- MCP transport
+Remove `-DryRunGeneration` when you want the final step to create/update Xray tests, link them to the ticket, and create the Test Set.
 
-## Runtime Flow
+If your shell blocks local scripts, run:
 
-The background execution path is:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
+```
 
-1. `RequestAccepted`: persist the run and enqueue background execution.
-2. `RequestNormalized`: apply enum defaults and trim requester data.
-3. `JiraContextCollected`: retrieve the Jira issue, selected comments, linked issues, and referenced issue context.
-4. `ConfluenceResolved`: fetch only explicit Confluence links found in the fetched Jira issue context.
-5. `RepositoryResolved`: resolve Azure DevOps repository and PR or branch context from Jira development metadata.
-6. `CodeContextCollected`: collect changed files, bounded unified diffs, and neighboring tests.
-7. `XrayContextCollected`: retrieve linked and neighboring Xray tests when enabled.
-8. `ContextBundleBuilt`: build the structured prompt bundle and store preview artifacts.
-9. `ScenariosGenerated`: call the configured LLM and validate the returned JSON contract.
-10. `TestsGenerated`: auto-create or update Xray tests only when Xray auto-upsert is enabled and the run qualifies.
-11. `OutputsValidated`: run deterministic validation over generated scenarios.
-12. `OutputsWritten`: store markdown/json artifacts and a write summary.
+## Use As An Npm Package
 
-Run observability is stored with each stage and returned by `GET /api/runs/{runId}`:
+The package exposes both installable CLI binaries and a TypeScript library API.
 
-- `durationMs` is computed when a stage reaches `Succeeded`, `Skipped`, or `Failed`
-- `metrics` contains stage-specific counters such as context counts, warning/error counts, prompt character counts, provider request counts, Xray sync counts, and LLM token usage when the provider returns it
-- structured logs are emitted when stages start and complete, including stage name, status, duration, and metrics
+Install from a local checkout while developing:
 
-## API
+```powershell
+npm install ..\manso-testing-agent
+```
 
-Authentication:
+After publishing to your npm registry, install by package name:
 
-- `POST /api/runs` requires `Authorization: Bearer <token>` where the token comes from `RunIntakeAuthentication:BearerToken`.
-- `GET` endpoints use the same HTTP pipeline and return the stored run state or artifact content.
+```powershell
+npm install manso-testing-agent
+```
 
-Current endpoints:
+Run the CLIs from another project:
 
-| Route | Description |
-| --- | --- |
-| `POST /api/runs` | Accept a run request and return `202 Accepted` |
-| `GET /api/runs/{runId}` | Return run status, stages, warnings, errors, repository, and PR references |
-| `GET /api/runs/{runId}/artifacts` | List stored artifact metadata |
-| `GET /api/runs/{runId}/artifacts/{artifactName}` | Return the full content of a stored artifact |
-| `GET /health/live` | Liveness probe |
-| `GET /health/ready` | Readiness probe |
+```powershell
+npx extract-ticket --issue ABC-123 --out ./out
+npx summarize-pr-changes --issue ABC-123 --out ./out
+npx summarize-confluence-impact --issue ABC-123 --out ./out
+npx review-xray-tests --issue ABC-123 --out ./out
+npx generate-xray-tests --issue ABC-123 --out ./out --dry-run
+```
 
-## Request Contract
+Import the workflow APIs when you want to compose the steps yourself:
 
-The current webhook payload is smaller than earlier planning docs. The API now accepts this shape:
+```ts
+import {
+  AtlassianRestClient,
+  AtlassianRestSource,
+  extractTicketContext,
+  loadRuntimeConfig,
+  writeContextPack,
+} from "manso-testing-agent";
 
-```json
-{
-  "workflowPass": "ScenarioDesign",
-  "issueKey": "QA-1234",
-  "requestedBy": "abc-123"
+const config = await loadRuntimeConfig();
+if (!config.jiraRest) {
+  throw new Error("Jira REST config is required.");
+}
+
+const client = new AtlassianRestClient({
+  jira: {
+    baseUrl: config.jiraRest.jiraUrl,
+    username: config.jiraRest.jiraUsername,
+    apiToken: config.jiraRest.jiraApiToken,
+  },
+});
+
+const source = new AtlassianRestSource({
+  client,
+  ...(config.jiraRest.jiraCloudId ? { jiraCloudId: config.jiraRest.jiraCloudId } : {}),
+});
+
+try {
+  const context = await extractTicketContext("ABC-123", source);
+  await writeContextPack(context, "./out");
+} finally {
+  await source.close();
 }
 ```
 
-Notes:
+Before publishing or consuming the package tarball, verify the packaged contents:
 
-- `issueKey` is the Jira issue key.
-- `requestedBy` is the Jira/Atlassian account ID that triggered the run.
-- Confluence links are not accepted in the webhook body; they are extracted from the fetched Jira issue description, acceptance criteria, and comments when comment-link parsing is enabled.
-- only `https://.../wiki/...` links on allowed hosts are fetched
-- test scope starts from the configured default and can be inferred from repository context at runtime
-- repository context is derived from Jira development metadata and runtime context
+```powershell
+npm run pack:dry-run
+```
 
-Supported enum values:
+## Publish To Azure Artifacts
 
-| Field | Values |
-| --- | --- |
-| `workflowPass` | `ScenarioDesign` |
+The repository includes `.azure/azure-pipelines-publish.yml` for publishing `manso-testing-agent` to this Azure Artifacts npm registry:
 
-`workflowPass` is the user-facing selector. `ScenarioDesign` is currently the
-only supported pass and creates or updates test cases only.
+```text
+https://pkgs.dev.azure.com/afs-dev/_packaging/riverty-testing-commons/npm/registry/
+```
 
-Default normalization values come from `RequestNormalization` in `src/Manso.Api/appsettings.json`.
+Publishing is intentionally separated from validation:
 
-## Artifacts
+- `.azure/azure-pipelines-tests.yml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
+- `.azure/azure-pipelines-version-tag.yml` validates `main`, creates the next semantic version tag, and pushes it.
+- `.azure/azure-pipelines-publish.yml` publishes only from tags matching `v*`.
 
-The run store keeps artifact metadata and full artifact content. Common artifacts are:
+The publish pipeline uses `.azure/.npmrc` plus `npmAuthenticate@0`; no token is stored in the repo. Pipeline file paths are repository-root relative, even though the YAML lives under `.azure/`. The Azure DevOps pipeline identity must have permission to publish to the `riverty-testing-commons` feed, typically Feed Publisher or Contributor.
 
-| Artifact | When it appears |
-| --- | --- |
-| `generation-context-bundle.json` | after context assembly |
-| `llm-prompt.json` | after context assembly |
-| `generated-scenarios.json` | successful scenario generation |
-| `generated-scenarios.md` | successful output writing |
-| `validation-report.json` | successful validation |
-| `write-result.json` | successful output writing |
-| `xray-sync-result.json` | when Xray auto-upsert runs |
+## Automated Version Tags
 
-Important limitation:
+The repository includes `.azure/azure-pipelines-version-tag.yml` for main-branch semantic version tagging. It is designed for this flow:
 
-- the current orchestration stores scenario artifacts only; it does not create branches or draft PRs
+1. Create the first stable tag manually, for example `v0.1.1`.
+2. Merge a PR into `main`.
+3. The version-tag pipeline validates the package, finds the latest `vX.Y.Z` tag, calculates the next version, and pushes a new annotated tag.
+4. The publish pipeline runs from the tag and stamps the npm package version from that tag before publishing. This is done in the pipeline workspace only; it does not push package version commits back to `main`.
 
-## Repository Resolution Rules
+By default it bumps the patch version:
 
-Repository context is intentionally deterministic:
+- `v0.1.1` -> `v0.1.2`
+- `v0.1.2` -> `v0.1.3`
 
-- repository selection comes from Jira development information
-- `ScenarioDesign` accepts open or merged pull requests and ignores rejected or abandoned ones
-- if Jira does not uniquely identify one repository, the repository stages are skipped with explicit warnings instead of defaulting silently
-- repo-specific test-generation guidance is read only from the fixed Manso paths in the target repo, including `/.manso/repo-conventions.json` when present
+Control the bump from the PR title or merge commit message:
 
-## Xray Behavior
+- `#major`, `[major]`, or `semver:major`
+- `#minor`, `[minor]`, or `semver:minor`
+- `#patch`, `[patch]`, or `semver:patch`
 
-The current orchestration path uses two Xray features:
+If no marker is present, it uses `patch`.
 
-- neighboring Xray test retrieval for prompt context
-- optional automatic test case upsert from generated scenarios
+Requirements:
 
-The Xray provider client also supports creating Test Executions, updating Test
-Run status/comment/evidence, and associating tests/executions with Xray Test
-Plans and Test Sets. That execution-upload path is available at the provider
-boundary but is not yet invoked by the runtime workflow.
+- `main` should be protected so changes land through PRs.
+- The repository build service must be allowed to create and push tags.
+- The pipeline checkout keeps credentials with `persistCredentials: true`.
 
-Automatic Xray upsert only runs when all of these are true:
+Manual release fallback:
 
-- `XrayRetrieval:EnableScenarioAutoUpsert=true`
-- `workflowPass=ScenarioDesign`
-- validation outcome is `Pass` or `PassWithWarnings`
+```powershell
+git tag -a v0.1.2 -m "Release v0.1.2"
+git push origin v0.1.2
+```
 
-## LLM Providers
+For a local authenticated publish, make sure `package.json` has the version you intend to publish, then use:
 
-Supported `Llm:Provider` values:
+```powershell
+npm run publish:azure
+```
 
-- `Disabled`
-- `Mock`
-- `OpenAi`
-- `Anthropic`
+## Workflow Steps
 
-Provider behavior:
+Run steps individually when you want more control:
 
-- `Mock` is the safest local default for deterministic development and tests
-- `OpenAi` uses Chat Completions for standard models and Responses API for `-pro` and `codex-max` style models
-- OpenAI `-pro` models run in background mode and are polled until completion
-- `Anthropic` uses the Messages API
+```powershell
+npm run extract-ticket -- --issue ABC-123 --out ./out
+npm run summarize-pr-changes -- --issue ABC-123 --out ./out
+npm run summarize-confluence-impact -- --issue ABC-123 --out ./out
+npm run review-xray-tests -- --issue ABC-123 --out ./out
+npm run generate-xray-tests -- --issue ABC-123 --out ./out --dry-run
+```
+
+Outputs are written under `out/<issue-key>/`:
+
+| Step | Reads | Writes |
+| --- | --- | --- |
+| `extract-ticket` | Jira issue key | `context.json`, `context.md` |
+| `summarize-pr-changes` | `context.json` | `pr-changes.json`, `pr-changes.md` |
+| `summarize-confluence-impact` | `context.json` | `confluence-impact.json`, `confluence-impact.md` |
+| `review-xray-tests` | `context.json` | `xray-test-review.json`, `xray-test-review.md` |
+| `generate-xray-tests` | `context.json` plus optional packs | `xray-test-generation.json`, `xray-test-generation.md` and, unless `--dry-run`, Jira/Xray writes |
+
+`generate-xray-tests` automatically looks for `xray-test-review.json`, `pr-changes.json`, and `confluence-impact.json` next to `context.json`. You can override those paths with `--xray-test-review`, `--pr-changes`, and `--confluence-impact`.
 
 ## Configuration
 
-Primary configuration sections currently used by the application:
+Use environment variables for local, CI, and Kubernetes runs. `--config <path>` is still supported for non-secret overrides, but no config file is required by default.
 
-| Section | Purpose |
-| --- | --- |
-| `ConnectionStrings` | run-store connection string |
-| `RunIntakeAuthentication` | bearer token for webhook intake |
-| `RunPersistence` | `Postgres` or `InMemory` run storage |
-| `RequestNormalization` | internal defaults for scope, coverage, and output |
-| `Jira` | Jira API connection settings |
-| `JiraRetrieval` | Jira comment retrieval behavior |
-| `Confluence` | Confluence API connection settings |
-| `DocumentationRetrieval` | Confluence page and chunk limits |
-| `Xray` | Xray API connection settings |
-| `XrayRetrieval` | Xray lookup and auto-upsert controls |
-| `Scm` | Azure DevOps connection settings |
-| `RepositoryRetrieval` | changed-file, diff, and neighboring-test limits |
-| `GenerationContext` | context bundle size caps |
-| `ScenarioGeneration` | minimum and maximum scenario counts |
-| `RuntimePrompt` | path to `agent-runtime/` markdown guidance |
-| `Validation` | placeholder, path, extension, and assertion rules |
-| `Llm` | provider, model, token, timeout, and temperature |
+### Jira And Confluence
 
-The local baseline config lives in `src/Manso.Api/appsettings.json`.
+```env
+JIRA_URL=https://your-site.atlassian.net
+JIRA_USERNAME=service-account@example.com
+JIRA_API_TOKEN=your_api_token
+JIRA_CLOUD_ID=
+CONFLUENCE_ENABLED=true
+CONFLUENCE_URL=https://your-site.atlassian.net/wiki
+CONFLUENCE_USERNAME=service-account@example.com
+CONFLUENCE_API_TOKEN=your_api_token
+```
 
-## Run Locally
+Jira issue details, comments, issue links, remote links, and Confluence page hydration use Atlassian REST APIs. Pull request and branch extraction uses Atlassian's first-party GraphQL gateway, `gateway/api/graphql`, with `developmentInformation(issueId: ARI)`. Set `JIRA_CLOUD_ID` when you know the cloud id; otherwise the extractor tries to discover it from `/_edge/tenant_info`.
 
-Prerequisites:
+Set `CONFLUENCE_ENABLED=false` when `extract-ticket` should keep linked Confluence URLs from Jira but skip Confluence REST page-body hydration. `summarize-confluence-impact` logs that Confluence is disabled, writes no output, and exits successfully.
 
-- .NET 10 SDK
-- PostgreSQL if you keep `RunPersistence:Provider=Postgres`
-- Jira, Confluence, Azure DevOps, Xray, and LLM credentials only if you want live provider calls
+### OpenAI And PR Diffs
 
-Build and run:
+```env
+AZURE_DEVOPS_PAT=your_azure_devops_pat
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-5.5
+```
+
+`AZURE_DEVOPS_PAT` needs read access to Azure DevOps Code. The PR summarizer currently supports Azure DevOps PR URLs from `context.json -> development.pullRequests`.
+
+The LLM-backed steps are:
+
+- `summarize-pr-changes`: summarizes PR diffs for test-gap context.
+- `summarize-confluence-impact`: maps linked Confluence content to ticket impact.
+- `review-xray-tests`: reviews existing linked Xray tests and the acceptance criteria they appear to cover.
+- `generate-xray-tests`: creates a strict Xray manual test plan from the context packs.
+
+The OpenAI-backed adapters use a shared QA persona named Juana: rigorous, skeptical, evidence-led, and bounded to the retrieved Jira, Confluence, PR diff, and Xray context. The prompts require English output, explicit uncertainty, and traceability from proposed tests back to source evidence.
+
+### Xray Cloud
+
+```env
+XRAY_BASE_URL=https://xray.cloud.getxray.app
+XRAY_CLIENT_ID=your_xray_client_id
+XRAY_CLIENT_SECRET=your_xray_client_secret
+XRAY_TEST_LINK_TYPE=tests
+XRAY_TEST_LINK_DIRECTION=test-to-ticket
+```
+
+Use the Xray Cloud data residency base URL for your tenant when required, for example `https://eu.xray.cloud.getxray.app`.
+
+`review-xray-tests` uses Xray Cloud credentials, when present, to fetch expanded existing test definitions and manual steps before calling the LLM. `generate-xray-tests` uses Xray Cloud GraphQL to create tests, replace manual steps on updated tests, and create the generated Test Set.
+
+Before linking tests to the source ticket, the workflow calls Jira REST `GET /rest/api/3/issueLinkType`, resolves the `tests` / `is tested by` link type, and sends the Jira link payload by link type id. `XRAY_TEST_LINK_TYPE` defaults to `tests` and is only a lookup hint for Jira sites that use a different link type name. `XRAY_TEST_LINK_DIRECTION` defaults to `test-to-ticket`, which creates the Jira issue link with the Test as the outward issue and the ticket as the inward issue. If your Jira link type is configured in the opposite direction, set `XRAY_TEST_LINK_DIRECTION=ticket-to-test`.
+
+## PowerShell Runner
+
+The runner executes the workflow in order:
 
 ```powershell
-dotnet restore src/Manso.sln
-dotnet build src/Manso.sln
-dotnet test src/Manso.sln
-dotnet run --project src/Manso.Api
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
 ```
 
-The development profile listens on `http://localhost:5206`.
-
-Example request:
+Useful switches:
 
 ```powershell
-$token = "local-dev-token"
-$body = @'
-{
-  "workflowPass": "ScenarioDesign",
-  "issueKey": "QA-1234",
-  "requestedBy": "abc-123"
-}
-'@
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:5206/api/runs `
-  -Headers @{ Authorization = "Bearer $token" } `
-  -ContentType "application/json" `
-  -Body $body
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -SkipPrChanges -SkipConfluenceImpact -DryRunGeneration
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ContinueOnOptionalFailure -DryRunGeneration
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -SkipXrayGeneration
 ```
 
-Inspect the run and artifacts:
+`extract-ticket` is always treated as required. PR changes, Confluence impact, and Xray review are enrichment steps; pass `-ContinueOnOptionalFailure` when you want the runner to continue if one of those optional steps is not configured. The final generation step is skipped only when `-SkipXrayGeneration` is passed.
 
-```powershell
-Invoke-RestMethod http://localhost:5206/api/runs/<run-id>
-Invoke-RestMethod http://localhost:5206/api/runs/<run-id>/artifacts
-Invoke-RestMethod http://localhost:5206/api/runs/<run-id>/artifacts/generated-scenarios.md
+Every CLI prints progress logs to stderr with a command prefix and elapsed seconds. The PowerShell runner also logs each npm command, step duration, and total workflow duration.
+
+## CI Or Kubernetes
+
+Provide the same environment variables through your secret manager. Minimal Kubernetes Secret shape:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: manso-testing-agent
+type: Opaque
+stringData:
+  JIRA_URL: https://your-site.atlassian.net
+  JIRA_USERNAME: service-account@example.com
+  JIRA_API_TOKEN: your_api_token
+  JIRA_CLOUD_ID: your_cloud_id
+  CONFLUENCE_ENABLED: "true"
+  CONFLUENCE_URL: https://your-site.atlassian.net/wiki
+  CONFLUENCE_USERNAME: service-account@example.com
+  CONFLUENCE_API_TOKEN: your_api_token
+  AZURE_DEVOPS_PAT: your_azure_devops_pat
+  OPENAI_API_KEY: your_openai_api_key
+  OPENAI_MODEL: gpt-5.5
+  XRAY_BASE_URL: https://xray.cloud.getxray.app
+  XRAY_CLIENT_ID: your_xray_client_id
+  XRAY_CLIENT_SECRET: your_xray_client_secret
+  XRAY_TEST_LINK_TYPE: tests
+  XRAY_TEST_LINK_DIRECTION: test-to-ticket
 ```
 
-## Docker
+Use that secret in the container env:
 
-```powershell
-docker build -f src/Manso.Api/Dockerfile -t testing-agent-gateway:manso-net10 .
-docker run --rm -p 8080:8080 testing-agent-gateway:manso-net10
+```yaml
+envFrom:
+  - secretRef:
+      name: manso-testing-agent
 ```
 
-## Repository Layout
+## Safety Notes
 
-```text
-testing-agent-gateway/
-|- agent-runtime/
-|- docs/
-|- implementation-plan/
-|- infra/
-`- src/
-   |- Manso.Api/
-   |- Manso.Application/
-   |- Manso.Domain/
-   |- Manso.Infrastructure/
-   |- tests/
-   |  |- Manso.UnitTests/
-   |  `- Manso.IntegrationTests/
-   `- Manso.sln
-```
+- `extract-ticket`, `summarize-pr-changes`, `summarize-confluence-impact`, and `review-xray-tests` are read-only against Jira, Confluence, Azure DevOps, and Xray.
+- `generate-xray-tests` is mutating unless `--dry-run` is passed.
+- All output arrays are present even when empty.
+- Partial optional data is recorded in `warnings`; hard failures such as missing ticket, auth failure, or invalid schema return non-zero.
+- Do not commit real token values. `.env` and `extractor.config.local.json` are ignored by Git.
 
-Planning and runtime guidance:
+## Source Layout
 
-- `AGENTS.md` is the repo entry point for agent instructions
-- `implementation-plan/00-agent-instructions.md` is the starting point for implementation guidance
-- `implementation-plan/` contains the numbered architecture and workflow documents
-- `agent-runtime/` contains markdown guidance used during prompt assembly
-
-## Deployment Notes
-
-- the Docker image is built from `src/Manso.Api/Dockerfile`
-- Azure pipeline config lives in `.azure/pipeline-app.yaml`
-- Key Vault secret declarations for the current deployment live in `infra/terraform/keyvault-SomeTeam-infra.tf`
-
-## Guardrails
-
-- retrieval is bounded and deterministic
-- Confluence retrieval is explicit-link only from Jira issue context
-- repository write paths are disabled in the current runtime flow
-- auto-merge is not allowed
-- generated scenarios must pass deterministic validation before output artifacts are finalized
+- `src/*Cli.ts`: command entry points.
+- `src/domain`: validated workflow contracts and domain transformations.
+- `src/workflows`: orchestration for each workflow step.
+- `src/integrations`: REST, GraphQL, and LLM adapters.
+- `src/output/<workflow>`: JSON/Markdown rendering and file writing per workflow.
+- `src/config`: runtime config and defaults.
+- `src/shared`: generic helpers with no product-specific dependencies.

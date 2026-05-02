@@ -1,0 +1,67 @@
+{
+  "name": "manso-testing-agent",
+  "version": "0.1.1",
+  "description": "Bounded Jira, PR, Confluence, and Xray test workflow CLI and TypeScript library.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "registry": "https://pkgs.dev.azure.com/afs-dev/_packaging/riverty-testing-commons/npm/registry/"
+  },
+  "bin": {
+    "extract-ticket": "./dist/extractTicketCli.js",
+    "summarize-pr-changes": "./dist/prChangesCli.js",
+    "summarize-confluence-impact": "./dist/confluenceImpactCli.js",
+    "review-xray-tests": "./dist/xrayTestReviewCli.js",
+    "generate-xray-tests": "./dist/xrayTestGenerationCli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example",
+    "scripts/run-ticket-workflow.ps1"
+  ],
+  "keywords": [
+    "jira",
+    "xray",
+    "qa",
+    "test-generation",
+    "azure-devops",
+    "confluence"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build",
+    "pack:dry-run": "npm pack --dry-run",
+    "publish:azure": "npm publish --userconfig .azure/.npmrc",
+    "test": "vitest run",
+    "extract-ticket": "tsx src/extractTicketCli.ts",
+    "summarize-pr-changes": "tsx src/prChangesCli.ts",
+    "summarize-confluence-impact": "tsx src/confluenceImpactCli.ts",
+    "review-xray-tests": "tsx src/xrayTestReviewCli.ts",
+    "generate-xray-tests": "tsx src/xrayTestGenerationCli.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
