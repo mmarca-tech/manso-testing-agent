@@ -102,62 +102,6 @@ Before publishing or consuming the package tarball, verify the packaged contents
 npm run pack:dry-run
 ```
 
-## Codeberg CI Publishing
-
-The repository includes Codeberg CI / Woodpecker workflows for validation, version tagging, and public npm publishing.
-
-Publishing is intentionally separated from validation:
-
-- `.woodpecker/tests.yaml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
-- `.woodpecker/version-tag.yaml` validates `main`, creates the next semantic version tag, and pushes it.
-- `.woodpecker/publish.yaml` publishes only from tags matching `v*`.
-
-The Woodpecker publish workflow targets the public npm registry at `https://registry.npmjs.org/` and creates `.npmrc` at runtime from secrets. Configure these repository or organization secrets in Codeberg CI:
-
-- `codeberg_username`: Codeberg user allowed to push release tags.
-- `codeberg_token`: Codeberg access token for that user with repository write permission.
-- `npm_token`: npm access token with publish permission for `manso-testing-agent`. Use a token that can publish from CI, for example a granular token with 2FA bypass when your npm account requires 2FA.
-
-## Automated Version Tags
-
-The repository includes `.woodpecker/version-tag.yaml` for main-branch semantic version tagging. It is designed for this flow:
-
-1. Create the first stable tag manually, for example `v0.1.1`.
-2. Merge a PR into `main`.
-3. The version-tag pipeline validates the package, finds the latest `vX.Y.Z` tag, calculates the next version, and pushes a new annotated tag.
-4. The publish pipeline runs from the tag and stamps the npm package version from that tag before publishing. This is done in the pipeline workspace only; it does not push package version commits back to `main`.
-
-By default it bumps the patch version:
-
-- `v0.1.1` -> `v0.1.2`
-- `v0.1.2` -> `v0.1.3`
-
-Control the bump from the PR title or merge commit message:
-
-- `#major`, `[major]`, or `semver:major`
-- `#minor`, `[minor]`, or `semver:minor`
-- `#patch`, `[patch]`, or `semver:patch`
-
-If no marker is present, it uses `patch`.
-
-Requirements:
-
-- `main` should be protected so changes land through PRs.
-- `codeberg_username` and `codeberg_token` must be available to the `push` event so `.woodpecker/version-tag.yaml` can push the generated tag.
-
-Manual release fallback:
-
-```powershell
-git tag -a v0.1.2 -m "Release v0.1.2"
-git push origin v0.1.2
-```
-
-For a local authenticated publish, make sure `package.json` has the version you intend to publish, then use:
-
-```powershell
-npm run publish:npm
-```
-
 ## Workflow Steps
 
 Run steps individually when you want more control:
@@ -288,43 +232,6 @@ Useful switches:
 
 Every CLI prints progress logs to stderr with a command prefix and elapsed seconds. The workflow runners also log each npm command, step duration, and total workflow duration.
 
-## CI Or Kubernetes
-
-Provide the same environment variables through your secret manager. Minimal Kubernetes Secret shape:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: manso-testing-agent
-type: Opaque
-stringData:
-  JIRA_URL: https://your-site.atlassian.net
-  JIRA_USERNAME: service-account@example.com
-  JIRA_API_TOKEN: your_api_token
-  JIRA_CLOUD_ID: your_cloud_id
-  CONFLUENCE_ENABLED: "true"
-  CONFLUENCE_URL: https://your-site.atlassian.net/wiki
-  CONFLUENCE_USERNAME: service-account@example.com
-  CONFLUENCE_API_TOKEN: your_api_token
-  AZURE_DEVOPS_PAT: your_azure_devops_pat
-  OPENAI_API_KEY: your_openai_api_key
-  OPENAI_MODEL: gpt-5.5
-  XRAY_BASE_URL: https://xray.cloud.getxray.app
-  XRAY_CLIENT_ID: your_xray_client_id
-  XRAY_CLIENT_SECRET: your_xray_client_secret
-  XRAY_TEST_LINK_TYPE: tests
-  XRAY_TEST_LINK_DIRECTION: test-to-ticket
-```
-
-Use that secret in the container env:
-
-```yaml
-envFrom:
-  - secretRef:
-      name: manso-testing-agent
-```
-
 ## Safety Notes
 
 - `extract-ticket`, `summarize-pr-changes`, `summarize-confluence-impact`, and `review-xray-tests` are read-only against Jira, Confluence, Azure DevOps, and Xray.
@@ -343,3 +250,59 @@ envFrom:
 - `src/output/<workflow>`: JSON/Markdown rendering and file writing per workflow.
 - `src/config`: runtime config and defaults.
 - `src/shared`: generic helpers with no product-specific dependencies.
+
+## Codeberg CI Publishing
+
+The repository includes Codeberg CI / Woodpecker workflows for validation, version tagging, and public npm publishing.
+
+Publishing is intentionally separated from validation:
+
+- `.woodpecker/tests.yaml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
+- `.woodpecker/version-tag.yaml` validates `main`, creates the next semantic version tag, and pushes it.
+- `.woodpecker/publish.yaml` publishes only from tags matching `v*`.
+
+The Woodpecker publish workflow targets the public npm registry at `https://registry.npmjs.org/` and creates `.npmrc` at runtime from secrets. Configure these repository or organization secrets in Codeberg CI:
+
+- `codeberg_username`: Codeberg user allowed to push release tags.
+- `codeberg_token`: Codeberg access token for that user with repository write permission.
+- `npm_token`: npm access token with publish permission for `manso-testing-agent`. Use a token that can publish from CI, for example a granular token with 2FA bypass when your npm account requires 2FA.
+
+## Automated Version Tags
+
+The repository includes `.woodpecker/version-tag.yaml` for main-branch semantic version tagging. It is designed for this flow:
+
+1. Create the first stable tag manually, for example `v0.1.1`.
+2. Merge a PR into `main`.
+3. The version-tag pipeline validates the package, finds the latest `vX.Y.Z` tag, calculates the next version, and pushes a new annotated tag.
+4. The publish pipeline runs from the tag and stamps the npm package version from that tag before publishing. This is done in the pipeline workspace only; it does not push package version commits back to `main`.
+
+By default it bumps the patch version:
+
+- `v0.1.1` -> `v0.1.2`
+- `v0.1.2` -> `v0.1.3`
+
+Control the bump from the PR title or merge commit message:
+
+- `#major`, `[major]`, or `semver:major`
+- `#minor`, `[minor]`, or `semver:minor`
+- `#patch`, `[patch]`, or `semver:patch`
+
+If no marker is present, it uses `patch`.
+
+Requirements:
+
+- `main` should be protected so changes land through PRs.
+- `codeberg_username` and `codeberg_token` must be available to the `push` event so `.woodpecker/version-tag.yaml` can push the generated tag.
+
+Manual release fallback:
+
+```powershell
+git tag -a v0.1.2 -m "Release v0.1.2"
+git push origin v0.1.2
+```
+
+For a local authenticated publish, make sure `package.json` has the version you intend to publish, then use:
+
+```powershell
+npm run publish:npm
+```
