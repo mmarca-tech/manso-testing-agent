@@ -47,6 +47,28 @@ export class AzureDevOpsClient {
 
     return response.text();
   }
+
+  async postJson(url: URL, body: unknown): Promise<unknown> {
+    const response = await this.fetchFn(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Basic ${Buffer.from(`:${this.token}`, "utf8").toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Azure DevOps REST ${response.status} ${response.statusText}: ${await safeResponseText(response)}`);
+    }
+
+    if (response.status === 204) {
+      return undefined;
+    }
+
+    return response.json();
+  }
 }
 
 async function safeResponseText(response: Response): Promise<string> {

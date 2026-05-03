@@ -18,7 +18,8 @@
     "summarize-pr-changes": "./dist/prChangesCli.js",
     "summarize-confluence-impact": "./dist/confluenceImpactCli.js",
     "review-xray-tests": "./dist/xrayTestReviewCli.js",
-    "generate-xray-tests": "./dist/xrayTestGenerationCli.js"
+    "generate-xray-tests": "./dist/xrayTestGenerationCli.js",
+    "implement-xray-tests": "./dist/xrayTestImplementationCli.js"
   },
   "files": [
     "dist",
@@ -46,7 +47,8 @@
     "summarize-pr-changes": "tsx src/prChangesCli.ts",
     "summarize-confluence-impact": "tsx src/confluenceImpactCli.ts",
     "review-xray-tests": "tsx src/xrayTestReviewCli.ts",
-    "generate-xray-tests": "tsx src/xrayTestGenerationCli.ts"
+    "generate-xray-tests": "tsx src/xrayTestGenerationCli.ts",
+    "implement-xray-tests": "tsx src/xrayTestImplementationCli.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

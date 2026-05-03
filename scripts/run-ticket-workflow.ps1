@@ -10,6 +10,9 @@ Runs the Jira ticket context, enrichment, review, and Xray generation workflow.
 
 .EXAMPLE
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ContinueOnOptionalFailure
+
+.EXAMPLE
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ImplementXrayTests -TestImplementationCommand "codex exec -"
 #>
 [CmdletBinding()]
 param(
@@ -33,6 +36,22 @@ param(
     [switch] $SkipXrayGeneration,
 
     [switch] $DryRunGeneration,
+
+    [switch] $ImplementXrayTests,
+
+    [switch] $ImplementationPromptOnly,
+
+    [switch] $AllowDirtyImplementation,
+
+    [string] $TestImplementationCommand,
+
+    [string] $TestVerificationCommand,
+
+    [string] $ImplementationBranch,
+
+    [string] $ImplementationTargetBranch,
+
+    [string] $ImplementationRepo,
 
     [switch] $ContinueOnOptionalFailure
 )
@@ -142,6 +161,48 @@ if (-not $SkipXrayGeneration) {
     }
 
     Invoke-ProcessStep -Name "Generate Xray tests" -Arguments $generationArgs.ToArray()
+}
+
+if ($ImplementXrayTests) {
+    $implementationArgs = [System.Collections.Generic.List[string]]::new()
+    (Add-CommonArgs -Arguments @("run", "implement-xray-tests", "--", "--issue", $Issue, "--out", $Out)) | ForEach-Object {
+        $implementationArgs.Add($_)
+    }
+
+    if ($TestImplementationCommand) {
+        $implementationArgs.Add("--agent-command")
+        $implementationArgs.Add($TestImplementationCommand)
+    }
+
+    if ($TestVerificationCommand) {
+        $implementationArgs.Add("--verify-command")
+        $implementationArgs.Add($TestVerificationCommand)
+    }
+
+    if ($ImplementationBranch) {
+        $implementationArgs.Add("--branch")
+        $implementationArgs.Add($ImplementationBranch)
+    }
+
+    if ($ImplementationTargetBranch) {
+        $implementationArgs.Add("--target-branch")
+        $implementationArgs.Add($ImplementationTargetBranch)
+    }
+
+    if ($ImplementationRepo) {
+        $implementationArgs.Add("--repo")
+        $implementationArgs.Add($ImplementationRepo)
+    }
+
+    if ($ImplementationPromptOnly) {
+        $implementationArgs.Add("--prompt-only")
+    }
+
+    if ($AllowDirtyImplementation) {
+        $implementationArgs.Add("--allow-dirty")
+    }
+
+    Invoke-ProcessStep -Name "Implement generated Xray test cases" -Arguments $implementationArgs.ToArray()
 }
 
 Write-Host ""

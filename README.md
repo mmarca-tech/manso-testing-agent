@@ -50,6 +50,7 @@ npx summarize-pr-changes --issue ABC-123 --out ./out
 npx summarize-confluence-impact --issue ABC-123 --out ./out
 npx review-xray-tests --issue ABC-123 --out ./out
 npx generate-xray-tests --issue ABC-123 --out ./out --dry-run
+npx implement-xray-tests --issue ABC-123 --out ./out --prompt-only
 ```
 
 Import the workflow APIs when you want to compose the steps yourself:
@@ -162,6 +163,7 @@ npm run summarize-pr-changes -- --issue ABC-123 --out ./out
 npm run summarize-confluence-impact -- --issue ABC-123 --out ./out
 npm run review-xray-tests -- --issue ABC-123 --out ./out
 npm run generate-xray-tests -- --issue ABC-123 --out ./out --dry-run
+npm run implement-xray-tests -- --issue ABC-123 --out ./out --prompt-only
 ```
 
 Outputs are written under `out/<issue-key>/`:
@@ -173,8 +175,24 @@ Outputs are written under `out/<issue-key>/`:
 | `summarize-confluence-impact` | `context.json` | `confluence-impact.json`, `confluence-impact.md` |
 | `review-xray-tests` | `context.json` | `xray-test-review.json`, `xray-test-review.md` |
 | `generate-xray-tests` | `context.json` plus optional packs | `xray-test-generation.json`, `xray-test-generation.md` and, unless `--dry-run`, Jira/Xray writes |
+| `implement-xray-tests` | `xray-test-generation.json` plus repo guidance files | `xray-test-implementation-prompt.md`, `xray-test-implementation.json`, `xray-test-implementation.md`, plus a test implementation branch/commit/PR unless `--prompt-only` |
 
 `generate-xray-tests` automatically looks for `xray-test-review.json`, `pr-changes.json`, and `confluence-impact.json` next to `context.json`. You can override those paths with `--xray-test-review`, `--pr-changes`, and `--confluence-impact`.
+
+`implement-xray-tests` is designed to be invoked from the repository that should receive automated tests. The package stays repo-agnostic by reading repository-owned guidance files and passing them to your chosen code-agent command:
+
+```powershell
+npx implement-xray-tests --issue ABC-123 --out ./out --agent-command "<command that reads the prompt from stdin>" --verify-command "npm test"
+```
+
+By default it requires these files relative to the target repo root:
+
+- `architecture/test-architecture.md`
+- `docs/testing/ai-test-generation.md`
+- `.manso/testgen.md`
+- `.manso/repo-conventions.json`
+
+The implementation command receives the prompt on stdin and these environment variables: `MANSO_TEST_IMPLEMENTATION_PROMPT`, `MANSO_TEST_ISSUE`, `MANSO_TEST_BRANCH`, and `MANSO_TEST_TARGET_BRANCH`. For a real implementation run, the CLI fetches the target/base branch from `origin`, creates a separate implementation branch from that base, commits the new test changes, pushes only the implementation branch, and creates an Azure DevOps PR. It never commits or pushes directly to the target/base branch. Use `--prompt-only` to only produce the prompt without any git mutations.
 
 ## Configuration
 
@@ -197,7 +215,7 @@ Jira issue details, comments, issue links, remote links, and Confluence page hyd
 
 Set `CONFLUENCE_ENABLED=false` when `extract-ticket` should keep linked Confluence URLs from Jira but skip Confluence REST page-body hydration. `summarize-confluence-impact` logs that Confluence is disabled, writes no output, and exits successfully.
 
-### OpenAI And PR Diffs
+### OpenAI, PR Diffs, And Implementation PRs
 
 ```env
 AZURE_DEVOPS_PAT=your_azure_devops_pat
@@ -205,7 +223,7 @@ OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-5.5
 ```
 
-`AZURE_DEVOPS_PAT` needs read access to Azure DevOps Code. The PR summarizer currently supports Azure DevOps PR URLs from `context.json -> development.pullRequests`.
+`AZURE_DEVOPS_PAT` needs read access to Azure DevOps Code for PR diff summaries. If `implement-xray-tests` should create the pull request, the same token also needs permission to create PRs in the target Azure DevOps repository. The PR summarizer currently supports Azure DevOps PR URLs from `context.json -> development.pullRequests`; implementation PR creation currently targets Azure DevOps remotes.
 
 The LLM-backed steps are:
 
@@ -213,6 +231,7 @@ The LLM-backed steps are:
 - `summarize-confluence-impact`: maps linked Confluence content to ticket impact.
 - `review-xray-tests`: reviews existing linked Xray tests and the acceptance criteria they appear to cover.
 - `generate-xray-tests`: creates a strict Xray manual test plan from the context packs.
+- `implement-xray-tests`: does not call OpenAI directly; it writes a repo-specific implementation prompt and invokes your configured code-agent command.
 
 The OpenAI-backed adapters use a shared QA persona named Juana: rigorous, skeptical, evidence-led, and bounded to the retrieved Jira, Confluence, PR diff, and Xray context. The prompts require English output, explicit uncertainty, and traceability from proposed tests back to source evidence.
 
@@ -246,9 +265,10 @@ Useful switches:
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -SkipPrChanges -SkipConfluenceImpact -DryRunGeneration
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ContinueOnOptionalFailure -DryRunGeneration
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -SkipXrayGeneration
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ImplementXrayTests -TestImplementationCommand "<command that reads the prompt from stdin>" -TestVerificationCommand "npm test"
 ```
 
-`extract-ticket` is always treated as required. PR changes, Confluence impact, and Xray review are enrichment steps; pass `-ContinueOnOptionalFailure` when you want the runner to continue if one of those optional steps is not configured. The final generation step is skipped only when `-SkipXrayGeneration` is passed.
+`extract-ticket` is always treated as required. PR changes, Confluence impact, and Xray review are enrichment steps; pass `-ContinueOnOptionalFailure` when you want the runner to continue if one of those optional steps is not configured. Xray generation is skipped only when `-SkipXrayGeneration` is passed. Test implementation is opt-in with `-ImplementXrayTests`, because a real implementation run mutates the target repo and must end by opening a PR. Use `-ImplementationPromptOnly` to generate the prompt without git mutations.
 
 Every CLI prints progress logs to stderr with a command prefix and elapsed seconds. The PowerShell runner also logs each npm command, step duration, and total workflow duration.
 
@@ -293,6 +313,7 @@ envFrom:
 
 - `extract-ticket`, `summarize-pr-changes`, `summarize-confluence-impact`, and `review-xray-tests` are read-only against Jira, Confluence, Azure DevOps, and Xray.
 - `generate-xray-tests` is mutating unless `--dry-run` is passed.
+- `implement-xray-tests` mutates the local git repository by creating an implementation branch from the target/base branch, pushing that implementation branch, and creating an Azure DevOps PR. It refuses to start with a dirty worktree unless `--allow-dirty` is passed, and it refuses to use the target/base branch as the implementation branch.
 - All output arrays are present even when empty.
 - Partial optional data is recorded in `warnings`; hard failures such as missing ticket, auth failure, or invalid schema return non-zero.
 - Do not commit real token values. `.env` and `extractor.config.local.json` are ignored by Git.
