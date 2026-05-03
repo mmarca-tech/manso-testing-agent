@@ -1,0 +1,31 @@
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+    branch: main
+
+steps:
+  - name: install dependencies
+    image: node:20-bookworm
+    commands:
+      - npm ci
+
+  - name: typescript check
+    image: node:20-bookworm
+    commands:
+      - npm run check
+
+  - name: run tests
+    image: node:20-bookworm
+    commands:
+      - npm test
+
+  - name: build package
+    image: node:20-bookworm
+    commands:
+      - npm run build
+
+  - name: verify npm package contents
+    image: node:20-bookworm
+    commands:
+      - npm run pack:dry-run

@@ -25,7 +25,8 @@
     "dist",
     "README.md",
     ".env.example",
-    "scripts/run-ticket-workflow.ps1"
+    "scripts/run-ticket-workflow.ps1",
+    "scripts/run-ticket-workflow.sh"
   ],
   "keywords": [
     "jira",
@@ -41,7 +42,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",
     "pack:dry-run": "npm pack --dry-run",
-    "publish:azure": "npm publish --userconfig .azure/.npmrc",
+    "publish:npm": "npm publish --registry https://registry.npmjs.org/",
     "test": "vitest run",
     "extract-ticket": "tsx src/extractTicketCli.ts",
     "summarize-pr-changes": "tsx src/prChangesCli.ts",

@@ -18,6 +18,12 @@ Set local secrets in `.env` or provide the same variables through CI/Kubernetes 
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
 ```
 
+Or from Bash:
+
+```bash
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --dry-run-generation
+```
+
 Remove `-DryRunGeneration` when you want the final step to create/update Xray tests, link them to the ticket, and create the Test Set.
 
 If your shell blocks local scripts, run:
@@ -96,25 +102,25 @@ Before publishing or consuming the package tarball, verify the packaged contents
 npm run pack:dry-run
 ```
 
-## Publish To Azure Artifacts
+## Codeberg CI Publishing
 
-The repository includes `.azure/azure-pipelines-publish.yml` for publishing `manso-testing-agent` to this Azure Artifacts npm registry:
-
-```text
-https://pkgs.dev.azure.com/afs-dev/_packaging/riverty-testing-commons/npm/registry/
-```
+The repository includes Codeberg CI / Woodpecker workflows for validation, version tagging, and public npm publishing.
 
 Publishing is intentionally separated from validation:
 
-- `.azure/azure-pipelines-tests.yml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
-- `.azure/azure-pipelines-version-tag.yml` validates `main`, creates the next semantic version tag, and pushes it.
-- `.azure/azure-pipelines-publish.yml` publishes only from tags matching `v*`.
+- `.woodpecker/tests.yaml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
+- `.woodpecker/version-tag.yaml` validates `main`, creates the next semantic version tag, and pushes it.
+- `.woodpecker/publish.yaml` publishes only from tags matching `v*`.
 
-The publish pipeline uses `.azure/.npmrc` plus `npmAuthenticate@0`; no token is stored in the repo. Pipeline file paths are repository-root relative, even though the YAML lives under `.azure/`. The Azure DevOps pipeline identity must have permission to publish to the `riverty-testing-commons` feed, typically Feed Publisher or Contributor.
+The Woodpecker publish workflow targets the public npm registry at `https://registry.npmjs.org/` and creates `.npmrc` at runtime from secrets. Configure these repository or organization secrets in Codeberg CI:
+
+- `codeberg_username`: Codeberg user allowed to push release tags.
+- `codeberg_token`: Codeberg access token for that user with repository write permission.
+- `npm_token`: npm access token with publish permission for `manso-testing-agent`. Use a token that can publish from CI, for example a granular token with 2FA bypass when your npm account requires 2FA.
 
 ## Automated Version Tags
 
-The repository includes `.azure/azure-pipelines-version-tag.yml` for main-branch semantic version tagging. It is designed for this flow:
+The repository includes `.woodpecker/version-tag.yaml` for main-branch semantic version tagging. It is designed for this flow:
 
 1. Create the first stable tag manually, for example `v0.1.1`.
 2. Merge a PR into `main`.
@@ -137,8 +143,7 @@ If no marker is present, it uses `patch`.
 Requirements:
 
 - `main` should be protected so changes land through PRs.
-- The repository build service must be allowed to create and push tags.
-- The pipeline checkout keeps credentials with `persistCredentials: true`.
+- `codeberg_username` and `codeberg_token` must be available to the `push` event so `.woodpecker/version-tag.yaml` can push the generated tag.
 
 Manual release fallback:
 
@@ -150,7 +155,7 @@ git push origin v0.1.2
 For a local authenticated publish, make sure `package.json` has the version you intend to publish, then use:
 
 ```powershell
-npm run publish:azure
+npm run publish:npm
 ```
 
 ## Workflow Steps
@@ -251,12 +256,16 @@ Use the Xray Cloud data residency base URL for your tenant when required, for ex
 
 Before linking tests to the source ticket, the workflow calls Jira REST `GET /rest/api/3/issueLinkType`, resolves the `tests` / `is tested by` link type, and sends the Jira link payload by link type id. `XRAY_TEST_LINK_TYPE` defaults to `tests` and is only a lookup hint for Jira sites that use a different link type name. `XRAY_TEST_LINK_DIRECTION` defaults to `test-to-ticket`, which creates the Jira issue link with the Test as the outward issue and the ticket as the inward issue. If your Jira link type is configured in the opposite direction, set `XRAY_TEST_LINK_DIRECTION=ticket-to-test`.
 
-## PowerShell Runner
+## Workflow Runner
 
 The runner executes the workflow in order:
 
 ```powershell
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
+```
+
+```bash
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --dry-run-generation
 ```
 
 Useful switches:
@@ -268,9 +277,16 @@ Useful switches:
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ImplementXrayTests -TestImplementationCommand "<command that reads the prompt from stdin>" -TestVerificationCommand "npm test"
 ```
 
+```bash
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --skip-pr-changes --skip-confluence-impact --dry-run-generation
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --continue-on-optional-failure --dry-run-generation
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --skip-xray-generation
+./scripts/run-ticket-workflow.sh --issue ABC-123 --out ./out --implement-xray-tests --test-implementation-command "<command that reads the prompt from stdin>" --test-verification-command "npm test"
+```
+
 `extract-ticket` is always treated as required. PR changes, Confluence impact, and Xray review are enrichment steps; pass `-ContinueOnOptionalFailure` when you want the runner to continue if one of those optional steps is not configured. Xray generation is skipped only when `-SkipXrayGeneration` is passed. Test implementation is opt-in with `-ImplementXrayTests`, because a real implementation run mutates the target repo and must end by opening a PR. Use `-ImplementationPromptOnly` to generate the prompt without git mutations.
 
-Every CLI prints progress logs to stderr with a command prefix and elapsed seconds. The PowerShell runner also logs each npm command, step duration, and total workflow duration.
+Every CLI prints progress logs to stderr with a command prefix and elapsed seconds. The workflow runners also log each npm command, step duration, and total workflow duration.
 
 ## CI Or Kubernetes
 
