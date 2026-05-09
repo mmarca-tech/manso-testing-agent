@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import type { LlmProvider, LlmRuntimeConfig, PhoenixTelemetryConfig } from "../integrations/llm/types.js";
 
 const ConfigSchema = z
   .object({
@@ -27,6 +28,32 @@ const ConfigSchema = z
         apiKey: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         baseUrl: z.string().url().optional(),
+      })
+      .strict()
+      .optional(),
+    llm: z
+      .object({
+        provider: z.enum(["openai", "anthropic"]).optional(),
+        apiKey: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        baseUrl: z.string().url().optional(),
+        apiVersion: z.string().min(1).optional(),
+        maxOutputTokens: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    observability: z
+      .object({
+        phoenix: z
+          .object({
+            enabled: z.boolean().optional(),
+            projectName: z.string().min(1).optional(),
+            url: z.string().url().optional(),
+            apiKey: z.string().min(1).optional(),
+            batch: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -61,6 +88,10 @@ export interface RuntimeConfig {
   azureDevOps?: {
     token: string;
   };
+  llm?: LlmRuntimeConfig;
+  observability?: {
+    phoenix?: PhoenixTelemetryConfig;
+  };
   openAi?: {
     apiKey: string;
     model: string;
@@ -82,12 +113,16 @@ export async function loadRuntimeConfig(options: CliOptions = {}): Promise<Runti
 
   const jiraRest = loadJiraRestConfig(fileConfig.jiraRest ?? {});
   const azureDevOps = loadAzureDevOpsConfig(fileConfig.azureDevOps ?? {});
-  const openAi = loadOpenAiConfig(fileConfig.openAi ?? {});
+  const llm = loadLlmConfig(fileConfig.llm ?? {}, fileConfig.openAi ?? {});
+  const observability = loadObservabilityConfig(fileConfig.observability ?? {});
+  const openAi = loadOpenAiConfig(fileConfig.openAi ?? {}, llm);
   const xray = loadXrayConfig(fileConfig.xray ?? {});
 
   return {
     ...(jiraRest ? { jiraRest } : {}),
     ...(azureDevOps ? { azureDevOps } : {}),
+    ...(llm ? { llm } : {}),
+    ...(observability ? { observability } : {}),
     ...(openAi ? { openAi } : {}),
     ...(xray ? { xray } : {}),
   };
@@ -143,7 +178,47 @@ function loadAzureDevOpsConfig(configured: NonNullable<z.infer<typeof ConfigSche
   return token ? { token } : undefined;
 }
 
-function loadOpenAiConfig(configured: NonNullable<z.infer<typeof ConfigSchema>["openAi"]>): RuntimeConfig["openAi"] | undefined {
+function loadObservabilityConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>,
+): RuntimeConfig["observability"] | undefined {
+  const phoenix = loadPhoenixTelemetryConfig(configured.phoenix ?? {});
+  return phoenix ? { phoenix } : undefined;
+}
+
+function loadPhoenixTelemetryConfig(
+  configured: NonNullable<NonNullable<z.infer<typeof ConfigSchema>["observability"]>["phoenix"]>,
+): PhoenixTelemetryConfig | undefined {
+  const enabled = configured.enabled ?? parseBoolean(nonEmpty(process.env.PHOENIX_ENABLED), false);
+  if (!enabled) {
+    return undefined;
+  }
+
+  const projectName = configured.projectName ?? nonEmpty(process.env.PHOENIX_PROJECT_NAME) ?? "manso-testing-agent";
+  const url = configured.url ?? nonEmpty(process.env.PHOENIX_COLLECTOR_ENDPOINT) ?? nonEmpty(process.env.PHOENIX_URL);
+  const apiKey = configured.apiKey ?? nonEmpty(process.env.PHOENIX_API_KEY);
+  const batch = configured.batch ?? parseBoolean(nonEmpty(process.env.PHOENIX_BATCH), true);
+
+  return {
+    enabled,
+    projectName,
+    ...(url ? { url } : {}),
+    ...(apiKey ? { apiKey } : {}),
+    batch,
+  };
+}
+
+function loadOpenAiConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["openAi"]>,
+  llm: RuntimeConfig["llm"],
+): RuntimeConfig["openAi"] | undefined {
+  if (llm?.provider === "openai") {
+    return {
+      apiKey: llm.apiKey,
+      model: llm.model,
+      ...(llm.baseUrl ? { baseUrl: llm.baseUrl } : {}),
+    };
+  }
+
   const apiKey = configured.apiKey ?? process.env.OPENAI_API_KEY;
   const model = configured.model ?? process.env.OPENAI_MODEL ?? "gpt-5.5";
   const baseUrl = configured.baseUrl ?? process.env.OPENAI_BASE_URL;
@@ -157,6 +232,88 @@ function loadOpenAiConfig(configured: NonNullable<z.infer<typeof ConfigSchema>["
     model,
     ...(baseUrl ? { baseUrl } : {}),
   };
+}
+
+function loadLlmConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["llm"]>,
+  configuredOpenAi: NonNullable<z.infer<typeof ConfigSchema>["openAi"]>,
+): RuntimeConfig["llm"] | undefined {
+  const provider = parseLlmProvider(configured.provider ?? nonEmpty(process.env.LLM_PROVIDER) ?? "openai");
+  if (provider === "openai") {
+    const apiKey = configured.apiKey ?? nonEmpty(process.env.LLM_API_KEY) ?? configuredOpenAi.apiKey ?? nonEmpty(process.env.OPENAI_API_KEY);
+    const model = configured.model ?? nonEmpty(process.env.LLM_MODEL) ?? configuredOpenAi.model ?? nonEmpty(process.env.OPENAI_MODEL) ?? "gpt-5.5";
+    const baseUrl = configured.baseUrl ?? nonEmpty(process.env.LLM_BASE_URL) ?? configuredOpenAi.baseUrl ?? nonEmpty(process.env.OPENAI_BASE_URL);
+
+    if (!apiKey) {
+      return undefined;
+    }
+
+    const maxOutputTokens = configured.maxOutputTokens ?? parseOptionalPositiveInteger(
+      nonEmpty(process.env.LLM_MAX_OUTPUT_TOKENS) ?? nonEmpty(process.env.OPENAI_MAX_OUTPUT_TOKENS),
+      provider,
+    );
+
+    return {
+      provider,
+      apiKey,
+      model,
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    };
+  }
+
+  const apiKey = configured.apiKey ?? nonEmpty(process.env.LLM_API_KEY) ?? nonEmpty(process.env.ANTHROPIC_API_KEY);
+  const model = configured.model ?? nonEmpty(process.env.LLM_MODEL) ?? nonEmpty(process.env.ANTHROPIC_MODEL) ?? "claude-sonnet-4-6";
+  const baseUrl = configured.baseUrl ?? nonEmpty(process.env.LLM_BASE_URL) ?? nonEmpty(process.env.ANTHROPIC_BASE_URL);
+  const apiVersion =
+    configured.apiVersion ?? nonEmpty(process.env.LLM_API_VERSION) ?? nonEmpty(process.env.ANTHROPIC_API_VERSION) ?? "2023-06-01";
+
+  if (!apiKey) {
+    return undefined;
+  }
+
+  const maxOutputTokens =
+    configured.maxOutputTokens ??
+    parseOptionalPositiveInteger(nonEmpty(process.env.LLM_MAX_OUTPUT_TOKENS) ?? nonEmpty(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS), provider) ??
+    16_000;
+
+  return {
+    provider,
+    apiKey,
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    apiVersion,
+    maxOutputTokens,
+  };
+}
+
+function parseLlmProvider(value: string): LlmProvider {
+  if (value === "openai" || value === "anthropic") {
+    return value;
+  }
+
+  throw new Error(`LLM provider must be one of: openai, anthropic. Actual value: ${value}`);
+}
+
+function parseOptionalPositiveInteger(value: string | undefined, provider: LlmProvider): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0 || String(parsed) !== value.trim()) {
+    throw new Error(`LLM max output tokens for ${provider} must be a positive integer. Actual value: ${value}`);
+  }
+
+  return parsed;
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function loadXrayConfig(configured: NonNullable<z.infer<typeof ConfigSchema>["xray"]>): RuntimeConfig["xray"] | undefined {

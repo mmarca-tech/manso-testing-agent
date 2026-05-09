@@ -1,64 +1,49 @@
-import type { ToolProvenance, Warning } from "../../domain/contextPack/schema.js";
-import { PullRequestUnderstandingSchema } from "../../domain/prChanges/schema.js";
-import type { PullRequestUnderstanding } from "../../domain/prChanges/schema.js";
-import type { PullRequestSummarizer, PullRequestSummaryInput } from "../../workflows/pr-changes/summarizer.js";
+import type { ToolProvenance, Warning } from "../../../domain/contextPack/schema.js";
+import { PullRequestUnderstandingSchema } from "../../../domain/prChanges/schema.js";
+import type { PullRequestUnderstanding } from "../../../domain/prChanges/schema.js";
+import type { PullRequestSummarizer, PullRequestSummaryInput } from "../../../workflows/pr-changes/summarizer.js";
 import { juanaSystemPrompt } from "./juanaPersona.js";
-import { extractOutputText, parseJsonObject, postOpenAiResponses } from "./responsesClient.js";
+import { parseJsonObject } from "../json.js";
+import type { LlmTextClient } from "../types.js";
 
-export interface OpenAiResponsesSummarizerOptions {
-  apiKey: string;
-  model: string;
-  baseUrl?: string;
-  fetchFn?: typeof fetch;
+export interface LlmPullRequestSummarizerOptions {
+  client: LlmTextClient;
 }
 
-export class OpenAiResponsesSummarizer implements PullRequestSummarizer {
-  readonly provider = "openai";
-  readonly model: string;
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
-  private readonly fetchFn: typeof fetch;
+export class LlmPullRequestSummarizer implements PullRequestSummarizer {
+  private readonly client: LlmTextClient;
   private readonly provenance: ToolProvenance[] = [];
   private readonly warnings: Warning[] = [];
 
-  constructor(options: OpenAiResponsesSummarizerOptions) {
-    this.apiKey = options.apiKey;
-    this.model = options.model;
-    this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "https://api.openai.com/v1";
-    this.fetchFn = options.fetchFn ?? fetch;
+  constructor(options: LlmPullRequestSummarizerOptions) {
+    this.client = options.client;
+  }
+
+  get provider(): string {
+    return this.client.provider;
+  }
+
+  get model(): string {
+    return this.client.model;
   }
 
   async summarize(input: PullRequestSummaryInput): Promise<PullRequestUnderstanding> {
     const calledAt = new Date().toISOString();
 
     try {
-      const payload = await postOpenAiResponses({
-        apiKey: this.apiKey,
-        baseUrl: this.baseUrl,
-        fetchFn: this.fetchFn,
-        body: {
-          model: this.model,
-          input: [
-            {
-              role: "system",
-              content: juanaSystemPrompt(
-                "Summarize pull request diffs for a downstream test-gap agent. Use only the provided JSON. Return strict JSON with summary, changeAreas, risks, and testingNotes. Focus on changed behavior, code-path clues, regression risk, and test-relevant evidence. Do not infer requirements that are not supported by the diff or Jira context.",
-              ),
-            },
-            {
-              role: "user",
-              content: buildPrompt(input),
-            },
-          ],
-        },
+      const text = await this.client.generateText({
+        operation: "summarizePullRequest",
+        systemPrompt: juanaSystemPrompt(
+          "Summarize pull request diffs for a downstream test-gap agent. Use only the provided JSON. Return strict JSON with summary, changeAreas, risks, and testingNotes. Focus on changed behavior, code-path clues, regression risk, and test-relevant evidence. Do not infer requirements that are not supported by the diff or Jira context.",
+        ),
+        userPrompt: buildPrompt(input),
       });
-      const text = extractOutputText(payload);
       const parsed = parseJsonObject(text);
-      this.provenance.push({ method: "summarizePullRequest", toolName: "openai:responses", calledAt, success: true });
+      this.provenance.push({ method: "summarizePullRequest", toolName: this.client.toolName, calledAt, success: true });
       return PullRequestUnderstandingSchema.parse(parsed);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.provenance.push({ method: "summarizePullRequest", toolName: "openai:responses", calledAt, success: false, message });
+      this.provenance.push({ method: "summarizePullRequest", toolName: this.client.toolName, calledAt, success: false, message });
       throw error;
     }
   }

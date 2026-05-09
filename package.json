@@ -1,6 +1,6 @@
 {
   "name": "manso-testing-agent",
-  "version": "0.1.1",
+  "version": "2.0.0",
   "description": "Bounded Jira, PR, Confluence, and Xray test workflow CLI and TypeScript library.",
   "license": "UNLICENSED",
   "type": "module",
@@ -14,10 +14,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "extract-ticket": "./dist/extractTicketCli.js",
-    "summarize-pr-changes": "./dist/prChangesCli.js",
-    "summarize-confluence-impact": "./dist/confluenceImpactCli.js",
-    "review-xray-tests": "./dist/xrayTestReviewCli.js",
+    "review-pull-request": "./dist/reviewPullRequestCli.js",
+    "generate-release-notes": "./dist/generateReleaseNotesCli.js",
     "generate-xray-tests": "./dist/xrayTestGenerationCli.js",
     "implement-xray-tests": "./dist/xrayTestImplementationCli.js"
   },
@@ -25,8 +23,7 @@
     "dist",
     "README.md",
     ".env.example",
-    "scripts/run-ticket-workflow.ps1",
-    "scripts/run-ticket-workflow.sh"
+    "scripts/run-ticket-workflow.ps1"
   ],
   "keywords": [
     "jira",
@@ -44,15 +41,20 @@
     "pack:dry-run": "npm pack --dry-run",
     "publish:npm": "npm publish --registry https://registry.npmjs.org/",
     "test": "vitest run",
-    "extract-ticket": "tsx src/extractTicketCli.ts",
-    "summarize-pr-changes": "tsx src/prChangesCli.ts",
-    "summarize-confluence-impact": "tsx src/confluenceImpactCli.ts",
-    "review-xray-tests": "tsx src/xrayTestReviewCli.ts",
+    "review-pull-request": "tsx src/reviewPullRequestCli.ts",
+    "generate-release-notes": "tsx src/generateReleaseNotesCli.ts",
     "generate-xray-tests": "tsx src/xrayTestGenerationCli.ts",
     "implement-xray-tests": "tsx src/xrayTestImplementationCli.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
+    "@anthropic-ai/sdk": "^0.95.1",
+    "@arizeai/openinference-instrumentation-anthropic": "^0.1.10",
+    "@arizeai/openinference-instrumentation-openai": "^4.1.0",
+    "@arizeai/phoenix-otel": "^1.0.1",
+    "@openai/codex": "^0.128.0",
     "dotenv": "^17.4.2",
+    "openai": "^6.37.0",
     "zod": "^4.4.2"
   },
   "devDependencies": {

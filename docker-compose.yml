@@ -1,0 +1,32 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: manso-phoenix
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://phoenix:phoenix@postgres:5432/phoenix
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: manso-phoenix-postgres
+    environment:
+      POSTGRES_USER: phoenix
+      POSTGRES_PASSWORD: phoenix
+      POSTGRES_DB: phoenix
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phoenix -d phoenix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - phoenix-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  phoenix-postgres-data:

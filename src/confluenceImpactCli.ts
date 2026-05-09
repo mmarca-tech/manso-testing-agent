@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { parseArgs } from "node:util";
+import { dirname } from "node:path";
 import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import { ContextPackSchema } from "./domain/contextPack/schema.js";
 import { AtlassianRestClient } from "./integrations/atlassianRest/client.js";
 import { ConfluenceRestPageSource } from "./integrations/confluence/pageSource.js";
-import { OpenAiConfluenceImpactSummarizer } from "./integrations/openai/confluenceImpactSummarizer.js";
+import { LlmConfluenceImpactSummarizer } from "./integrations/llm/adapters/confluenceImpactSummarizer.js";
+import { createLlmTextClient } from "./integrations/llm/factory.js";
+import { flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
 import { writeConfluenceImpactPack } from "./output/confluence-impact/writer.js";
+import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
+import { parseCommonContextArgs, resolveContextPath, type CommonContextArgs } from "./shared/cliArgs.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
 import { extractConfluenceImpact } from "./workflows/confluence-impact/extractor.js";
 
@@ -16,7 +19,7 @@ const CONFLUENCE_REST_DISABLED_MESSAGE =
   "Confluence impact generation skipped because CONFLUENCE_ENABLED=false. No confluence-impact.json/confluence-impact.md files were written.";
 
 async function main(): Promise<void> {
-  const args = parseCliArgs();
+  const args = parseCommonContextArgs();
   const logProgress = createProgressLogger("summarize-confluence-impact");
 
   if (args.help) {
@@ -24,11 +27,27 @@ async function main(): Promise<void> {
     return;
   }
 
+  try {
+    await runConfluenceImpact(args, logProgress);
+  } finally {
+    await flushPhoenixTelemetry();
+  }
+}
+
+export async function runConfluenceImpact(args: ParsedArgs, logProgress = createProgressLogger("summarize-confluence-impact")): Promise<{ jsonPath: string; markdownPath: string } | undefined> {
   const contextPath = resolveContextPath(args);
   if (isExplicitlyFalse(process.env.CONFLUENCE_ENABLED)) {
     logProgress(CONFLUENCE_REST_DISABLED_MESSAGE);
     console.warn(CONFLUENCE_REST_DISABLED_MESSAGE);
-    return;
+    return undefined;
+  }
+
+  logProgress(`Loading context from ${contextPath}.`);
+  const context = ContextPackSchema.parse(JSON.parse(await readFile(contextPath, "utf8")));
+  logProgress(`Loaded context for ${context.ticket.key}: ${context.confluencePages.length} linked Confluence page(s).`);
+  if (context.confluencePages.length === 0) {
+    logProgress("No linked Confluence pages found; skipping Confluence impact extraction.");
+    return undefined;
   }
 
   logProgress("Loading runtime configuration.");
@@ -43,17 +62,15 @@ async function main(): Promise<void> {
   if (!config.jiraRest.includeConfluence) {
     logProgress(CONFLUENCE_REST_DISABLED_MESSAGE);
     console.warn(CONFLUENCE_REST_DISABLED_MESSAGE);
-    return;
+    return undefined;
   }
 
-  if (!config.openAi) {
-    throw new CliError("Missing OpenAI config. Set OPENAI_API_KEY, and optionally OPENAI_MODEL.");
+  if (!config.llm) {
+    throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
-  logProgress(`Loading context from ${contextPath}.`);
-  const context = ContextPackSchema.parse(JSON.parse(await readFile(contextPath, "utf8")));
-  logProgress(`Loaded context for ${context.ticket.key}: ${context.confluencePages.length} linked Confluence page(s).`);
-  logProgress(`Using OpenAI model ${config.openAi.model}.`);
+  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   const client = new AtlassianRestClient({
     jira: {
       baseUrl: config.jiraRest.jiraUrl,
@@ -74,11 +91,7 @@ async function main(): Promise<void> {
       : {}),
   });
   const pageSource = new ConfluenceRestPageSource(client);
-  const summarizer = new OpenAiConfluenceImpactSummarizer({
-    apiKey: config.openAi.apiKey,
-    model: config.openAi.model,
-    ...(config.openAi.baseUrl ? { baseUrl: config.openAi.baseUrl } : {}),
-  });
+  const summarizer = new LlmConfluenceImpactSummarizer({ client: llmClient });
   logProgress("Starting Confluence impact workflow.");
   const pack = await extractConfluenceImpact(context, pageSource, summarizer, { sourceContextPath: contextPath, onProgress: logProgress });
   logProgress(`Writing Confluence impact outputs to ${dirname(contextPath)}.`);
@@ -89,48 +102,10 @@ async function main(): Promise<void> {
   if (pack.warnings.length > 0) {
     console.warn(`Completed with ${pack.warnings.length} warning(s). See confluence-impact.json/confluence-impact.md.`);
   }
+  return { jsonPath: result.jsonPath, markdownPath: result.markdownPath };
 }
 
-interface ParsedArgs {
-  issue?: string;
-  outDir: string;
-  contextPath?: string;
-  configPath?: string;
-  help: boolean;
-}
-
-function parseCliArgs(): ParsedArgs {
-  const parsed = parseArgs({
-    options: {
-      issue: { type: "string" },
-      out: { type: "string" },
-      context: { type: "string" },
-      config: { type: "string" },
-      help: { type: "boolean", short: "h" },
-    },
-    allowPositionals: false,
-  });
-
-  return {
-    ...(parsed.values.issue ? { issue: parsed.values.issue } : {}),
-    outDir: parsed.values.out ?? "./out",
-    ...(parsed.values.context ? { contextPath: parsed.values.context } : {}),
-    ...(parsed.values.config ? { configPath: parsed.values.config } : {}),
-    help: parsed.values.help ?? false,
-  };
-}
-
-function resolveContextPath(args: ParsedArgs): string {
-  if (args.contextPath) {
-    return args.contextPath;
-  }
-
-  if (!args.issue) {
-    throw new CliError("Missing --context or --issue value.");
-  }
-
-  return join(args.outDir, args.issue, "context.json");
-}
+export type ParsedArgs = CommonContextArgs;
 
 function printHelp(): void {
   console.log(`Confluence Impact Summarizer
@@ -148,20 +123,8 @@ Options:
 `);
 }
 
-class CliError extends Error {}
-
 function isExplicitlyFalse(value: string | undefined): boolean {
   return value !== undefined && ["0", "false", "no", "off"].includes(value.toLowerCase());
 }
 
-main().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    console.error(error.message);
-  } else if (error instanceof Error) {
-    console.error(error.stack ?? error.message);
-  } else {
-    console.error(String(error));
-  }
-
-  process.exitCode = 1;
-});
+rejectInternalCliEntrypoint(import.meta.url, "generate-xray-tests --issue <key> --out <dir>");

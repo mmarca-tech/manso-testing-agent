@@ -1,18 +1,16 @@
 <#
 .SYNOPSIS
-Runs the Jira ticket context, enrichment, review, and Xray generation workflow.
+Runs the public generate-xray-tests workflow, and optionally implement-xray-tests.
 
 .EXAMPLE
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -DryRunGeneration
 
 .EXAMPLE
-.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -SkipPrChanges -SkipConfluenceImpact -DryRunGeneration
-
-.EXAMPLE
-.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ContinueOnOptionalFailure
+.\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ImplementXrayTests -ImplementationPromptOnly -DryRunGeneration
 
 .EXAMPLE
 .\scripts\run-ticket-workflow.ps1 -Issue ABC-123 -Out ./out -ImplementXrayTests -TestImplementationCommand "codex exec -"
+
 #>
 [CmdletBinding()]
 param(
@@ -44,6 +42,10 @@ param(
     [switch] $AllowDirtyImplementation,
 
     [string] $TestImplementationCommand,
+
+    [string] $TestImplementationAgentPath,
+
+    [string] $TestImplementationAgentArguments,
 
     [string] $TestVerificationCommand,
 
@@ -132,22 +134,8 @@ if ($Build) {
 
 Write-WorkflowLog "Running ticket workflow for $Issue."
 
-$extractArgs = Add-CommonArgs -Arguments @("run", "extract-ticket", "--", "--issue", $Issue, "--out", $Out)
-Invoke-ProcessStep -Name "Extract Jira ticket context" -Arguments $extractArgs
-
-if (-not $SkipPrChanges) {
-    $prArgs = Add-CommonArgs -Arguments @("run", "summarize-pr-changes", "--", "--issue", $Issue, "--out", $Out)
-    Invoke-ProcessStep -Name "Summarize linked pull request changes" -Arguments $prArgs -Optional
-}
-
-if (-not $SkipConfluenceImpact) {
-    $confluenceArgs = Add-CommonArgs -Arguments @("run", "summarize-confluence-impact", "--", "--issue", $Issue, "--out", $Out)
-    Invoke-ProcessStep -Name "Summarize Confluence impact" -Arguments $confluenceArgs -Optional
-}
-
-if (-not $SkipXrayReview) {
-    $reviewArgs = Add-CommonArgs -Arguments @("run", "review-xray-tests", "--", "--issue", $Issue, "--out", $Out)
-    Invoke-ProcessStep -Name "Review linked Xray tests" -Arguments $reviewArgs -Optional
+if ($SkipPrChanges -or $SkipConfluenceImpact -or $SkipXrayReview) {
+    Write-Warning "SkipPrChanges, SkipConfluenceImpact, and SkipXrayReview are deprecated. generate-xray-tests now owns required extraction and enrichment internally."
 }
 
 if (-not $SkipXrayGeneration) {
@@ -169,9 +157,26 @@ if ($ImplementXrayTests) {
         $implementationArgs.Add($_)
     }
 
+    $implementationArgs.Add("--TestDesignEnabled")
+    $implementationArgs.Add((-not $SkipXrayGeneration).ToString().ToLowerInvariant())
+
+    if ($DryRunGeneration) {
+        $implementationArgs.Add("--dry-run")
+    }
+
     if ($TestImplementationCommand) {
         $implementationArgs.Add("--agent-command")
         $implementationArgs.Add($TestImplementationCommand)
+    }
+
+    if ($TestImplementationAgentPath) {
+        $implementationArgs.Add("--agent-path")
+        $implementationArgs.Add($TestImplementationAgentPath)
+    }
+
+    if ($TestImplementationAgentArguments) {
+        $implementationArgs.Add("--agent-arguments")
+        $implementationArgs.Add($TestImplementationAgentArguments)
     }
 
     if ($TestVerificationCommand) {

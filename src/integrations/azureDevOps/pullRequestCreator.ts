@@ -17,10 +17,57 @@ export interface CreateAzureDevOpsPullRequestInput {
 export interface CreatedAzureDevOpsPullRequest {
   id: number;
   url: string;
+  title?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
 }
 
 export class AzureDevOpsPullRequestCreator {
   constructor(private readonly client: AzureDevOpsClient) {}
+
+  async findActive(input: Omit<CreateAzureDevOpsPullRequestInput, "title" | "description">): Promise<CreatedAzureDevOpsPullRequest | undefined> {
+    const pullRequests = await this.listActive({
+      repository: input.repository,
+      targetBranch: input.targetBranch,
+    });
+    return pullRequests.find((pullRequest) => branchNamesEqual(pullRequest.sourceBranch, input.sourceBranch));
+  }
+
+  async findActiveForBranchReuse(input: Omit<CreateAzureDevOpsPullRequestInput, "title" | "description"> & { issueKey: string }): Promise<CreatedAzureDevOpsPullRequest | undefined> {
+    const pullRequests = await this.listActive({
+      repository: input.repository,
+      targetBranch: input.targetBranch,
+    });
+    const exact = pullRequests.find((pullRequest) => branchNamesEqual(pullRequest.sourceBranch, input.sourceBranch));
+    if (exact) {
+      return exact;
+    }
+
+    const prefixed = pullRequests.find((pullRequest) => branchNameHasPrefix(pullRequest.sourceBranch, input.sourceBranch));
+    if (prefixed) {
+      return prefixed;
+    }
+
+    const normalizedIssueKey = input.issueKey.toLowerCase();
+    return pullRequests.find((pullRequest) => pullRequest.title?.toLowerCase().includes(normalizedIssueKey));
+  }
+
+  private async listActive(input: { repository: AzureDevOpsRepositoryRef; targetBranch: string }): Promise<CreatedAzureDevOpsPullRequest[]> {
+    const url = azureDevOpsApiUrl(input.repository, `_apis/git/repositories/${input.repository.repository}/pullrequests`);
+    url.searchParams.set("api-version", "7.1");
+    url.searchParams.set("searchCriteria.status", "active");
+    url.searchParams.set("searchCriteria.targetRefName", toRefName(input.targetBranch));
+    url.searchParams.set("$top", "100");
+
+    const payload = await this.client.getJson(url);
+    return readPullRequestList(payload).map((pullRequest) => ({
+      id: pullRequest.id,
+      url: azureDevOpsPullRequestWebUrl(input.repository, pullRequest.id),
+      ...(pullRequest.title ? { title: pullRequest.title } : {}),
+      ...(pullRequest.sourceBranch ? { sourceBranch: pullRequest.sourceBranch } : {}),
+      ...(pullRequest.targetBranch ? { targetBranch: pullRequest.targetBranch } : {}),
+    }));
+  }
 
   async create(input: CreateAzureDevOpsPullRequestInput): Promise<CreatedAzureDevOpsPullRequest> {
     const url = azureDevOpsApiUrl(input.repository, `_apis/git/repositories/${input.repository.repository}/pullrequests`);
@@ -37,6 +84,9 @@ export class AzureDevOpsPullRequestCreator {
     return {
       id,
       url: azureDevOpsPullRequestWebUrl(input.repository, id),
+      title: input.title,
+      sourceBranch: input.sourceBranch,
+      targetBranch: input.targetBranch,
     };
   }
 }
@@ -122,6 +172,24 @@ function toRefName(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
 
+function fromRefName(refName: string): string {
+  return refName.replace(/^refs\/heads\//, "");
+}
+
+function branchNamesEqual(left: string | undefined, right: string): boolean {
+  return left !== undefined && fromRefName(left) === fromRefName(right);
+}
+
+function branchNameHasPrefix(value: string | undefined, prefix: string): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const branch = fromRefName(value);
+  const normalizedPrefix = fromRefName(prefix);
+  return branch.startsWith(`${normalizedPrefix}-`);
+}
+
 function readPullRequestId(payload: unknown): number {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Azure DevOps create pull request response was not an object.");
@@ -133,6 +201,36 @@ function readPullRequestId(payload: unknown): number {
   }
 
   return value;
+}
+
+function readPullRequestList(payload: unknown): Array<{ id: number; title?: string; sourceBranch?: string; targetBranch?: string }> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Azure DevOps list pull requests response was not an object.");
+  }
+
+  const value = (payload as Record<string, unknown>).value;
+  if (!Array.isArray(value)) {
+    throw new Error("Azure DevOps list pull requests response did not include a value array.");
+  }
+
+  return value.map((item) => {
+    const record = item && typeof item === "object" && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : {};
+    const title = readOptionalString(record.title);
+    const sourceBranch = readOptionalString(record.sourceRefName);
+    const targetBranch = readOptionalString(record.targetRefName);
+    return {
+      id: readPullRequestId(item),
+      ...(title ? { title } : {}),
+      ...(sourceBranch ? { sourceBranch: fromRefName(sourceBranch) } : {}),
+      ...(targetBranch ? { targetBranch: fromRefName(targetBranch) } : {}),
+    };
+  });
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function organizationFromCollectionUri(collectionUri: string): string | undefined {

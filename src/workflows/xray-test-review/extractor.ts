@@ -1,4 +1,4 @@
-import type { ContextPack, Warning } from "../../domain/contextPack/schema.js";
+import type { ContextPack, ToolProvenance, Warning } from "../../domain/contextPack/schema.js";
 import {
   XRAY_TEST_REVIEW_SCHEMA_VERSION,
   XrayTestReviewAnalysisSchema,
@@ -10,7 +10,10 @@ import type { XrayTestDefinition, XrayTestDefinitionSource } from "./xrayTestDef
 
 export interface ExtractXrayTestReviewOptions {
   sourceContextPath: string;
+  testDefinitions?: XrayTestDefinition[];
   definitionSource?: XrayTestDefinitionSource;
+  definitionProvenance?: ToolProvenance[];
+  definitionWarnings?: Warning[];
   warnings?: Warning[];
   onProgress?: (message: string) => void;
 }
@@ -22,7 +25,9 @@ export async function extractXrayTestReview(
 ): Promise<XrayTestReviewPack> {
   const warnings = [...(options.warnings ?? [])];
   const testDefinitions =
-    context.xrayTestCases.length === 0 ? [] : await fetchTestDefinitions(context, options.definitionSource, warnings, options.onProgress);
+    context.xrayTestCases.length === 0
+      ? []
+      : options.testDefinitions ?? await fetchTestDefinitions(context, options.definitionSource, warnings, options.onProgress);
   const review =
     context.xrayTestCases.length === 0
       ? emptyReview()
@@ -47,9 +52,16 @@ export async function extractXrayTestReview(
             },
           }
         : {}),
-      tools: [...(options.definitionSource?.getProvenance() ?? []), ...(reviewer?.getProvenance() ?? [])],
+      tools: [
+        ...(options.definitionProvenance ?? options.definitionSource?.getProvenance() ?? []),
+        ...(reviewer?.getProvenance() ?? []),
+      ],
     },
-    warnings: [...warnings, ...(options.definitionSource?.getWarnings() ?? []), ...(reviewer?.getWarnings() ?? [])],
+    warnings: [
+      ...warnings,
+      ...(options.definitionWarnings ?? options.definitionSource?.getWarnings() ?? []),
+      ...(reviewer?.getWarnings() ?? []),
+    ],
   };
 
   return XrayTestReviewPackSchema.parse(pack);

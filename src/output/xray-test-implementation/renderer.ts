@@ -35,6 +35,13 @@ export function renderXrayTestImplementationMarkdown(pack: XrayTestImplementatio
   } else {
     lines.push("- Verification: not run");
   }
+  if (pack.implementation.healingAttempts && pack.implementation.healingAttempts.length > 0) {
+    for (const attempt of pack.implementation.healingAttempts) {
+      lines.push(`- Healing attempt ${attempt.attempt}: ${attempt.command.command} (exit ${attempt.command.exitCode}, ${attempt.command.durationMs} ms)`);
+      lines.push(`- Healing verification ${attempt.attempt}: ${attempt.verification.command} (exit ${attempt.verification.exitCode}, ${attempt.verification.durationMs} ms)`);
+      lines.push(`  Prompt: ${attempt.promptPath}`);
+    }
+  }
 
   lines.push("", "## Changed Files", "");
   if (pack.implementation.changedFiles.length === 0) {

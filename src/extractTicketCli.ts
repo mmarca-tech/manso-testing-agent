@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { parseArgs } from "node:util";
 import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import { AtlassianRestClient } from "./integrations/atlassianRest/client.js";
 import { AtlassianRestSource } from "./integrations/atlassianRest/source.js";
 import { writeContextPack } from "./output/context-pack/writer.js";
+import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
+import { parseCommonIssueArgs, type CommonIssueArgs } from "./shared/cliArgs.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
 import type { TicketSource } from "./workflows/ticket-context/ticketSource.js";
 import { extractTicketContext } from "./workflows/ticket-context/extractor.js";
 
 async function main(): Promise<void> {
-  const args = parseCliArgs();
+  const args = parseCommonIssueArgs();
   const logProgress = createProgressLogger("extract-ticket");
 
   if (args.help) {
@@ -18,6 +19,10 @@ async function main(): Promise<void> {
     return;
   }
 
+  await runExtractTicket(args);
+}
+
+export async function runExtractTicket(args: ParsedArgs, logProgress = createProgressLogger("extract-ticket")): Promise<{ contextPath: string; markdownPath: string }> {
   if (!args.issue) {
     throw new CliError("Missing required --issue value.");
   }
@@ -43,37 +48,14 @@ async function main(): Promise<void> {
     if (context.warnings.length > 0) {
       console.warn(`Completed with ${context.warnings.length} warning(s). See context.json/context.md.`);
     }
+    return { contextPath: result.jsonPath, markdownPath: result.markdownPath };
   } finally {
     logProgress("Closing ticket source.");
     await source.close();
   }
 }
 
-interface ParsedArgs {
-  issue?: string;
-  outDir: string;
-  configPath?: string;
-  help: boolean;
-}
-
-function parseCliArgs(): ParsedArgs {
-  const parsed = parseArgs({
-    options: {
-      issue: { type: "string" },
-      out: { type: "string" },
-      config: { type: "string" },
-      help: { type: "boolean", short: "h" },
-    },
-    allowPositionals: false,
-  });
-
-  return {
-    ...(parsed.values.issue ? { issue: parsed.values.issue } : {}),
-    outDir: parsed.values.out ?? "./out",
-    ...(parsed.values.config ? { configPath: parsed.values.config } : {}),
-    help: parsed.values.help ?? false,
-  };
-}
+export type ParsedArgs = CommonIssueArgs;
 
 function printHelp(): void {
   console.log(`Jira Ticket Context Extractor
@@ -120,16 +102,4 @@ function createTicketSource(config: Awaited<ReturnType<typeof loadRuntimeConfig>
   });
 }
 
-class CliError extends Error {}
-
-main().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    console.error(error.message);
-  } else if (error instanceof Error) {
-    console.error(error.stack ?? error.message);
-  } else {
-    console.error(String(error));
-  }
-
-  process.exitCode = 1;
-});
+rejectInternalCliEntrypoint(import.meta.url, "generate-xray-tests --issue <key> --out <dir>");

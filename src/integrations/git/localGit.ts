@@ -12,6 +12,8 @@ export interface ShellRunResult {
   command: string;
   exitCode: number;
   durationMs: number;
+  stdout: string;
+  stderr: string;
 }
 
 export async function runGit(repoRoot: string, args: string[]): Promise<ProcessRunResult> {
@@ -31,7 +33,18 @@ export async function runShellCommand(command: string, repoRoot: string, env: No
       cwd: repoRoot,
       env,
       shell: true,
-      stdio: stdin === undefined ? ["inherit", "inherit", "inherit"] : ["pipe", "inherit", "inherit"],
+      stdio: stdin === undefined ? ["inherit", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      process.stderr.write(chunk);
     });
 
     child.on("error", reject);
@@ -40,6 +53,8 @@ export async function runShellCommand(command: string, repoRoot: string, env: No
         command,
         exitCode: exitCode ?? 1,
         durationMs: Date.now() - startedAt,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
       });
     });
 
@@ -87,6 +102,10 @@ export async function gitCurrentRemoteUrl(repoRoot: string): Promise<string> {
 
 export async function gitCurrentHeadSha(repoRoot: string): Promise<string> {
   return (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+}
+
+export async function gitCurrentBranch(repoRoot: string): Promise<string> {
+  return (await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
 }
 
 async function runProcess(command: string, args: string[], cwd: string): Promise<ProcessRunResult> {

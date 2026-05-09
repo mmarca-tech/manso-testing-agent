@@ -1,64 +1,49 @@
-import type { ToolProvenance, Warning } from "../../domain/contextPack/schema.js";
-import { ConfluenceImpactSchema } from "../../domain/confluenceImpact/schema.js";
-import type { ConfluenceImpact } from "../../domain/confluenceImpact/schema.js";
-import type { ConfluenceImpactInput, ConfluenceImpactSummarizer } from "../../workflows/confluence-impact/summarizer.js";
+import type { ToolProvenance, Warning } from "../../../domain/contextPack/schema.js";
+import { ConfluenceImpactSchema } from "../../../domain/confluenceImpact/schema.js";
+import type { ConfluenceImpact } from "../../../domain/confluenceImpact/schema.js";
+import type { ConfluenceImpactInput, ConfluenceImpactSummarizer } from "../../../workflows/confluence-impact/summarizer.js";
 import { juanaSystemPrompt } from "./juanaPersona.js";
-import { extractOutputText, parseJsonObject, postOpenAiResponses } from "./responsesClient.js";
+import { parseJsonObject } from "../json.js";
+import type { LlmTextClient } from "../types.js";
 
-export interface OpenAiConfluenceImpactSummarizerOptions {
-  apiKey: string;
-  model: string;
-  baseUrl?: string;
-  fetchFn?: typeof fetch;
+export interface LlmConfluenceImpactSummarizerOptions {
+  client: LlmTextClient;
 }
 
-export class OpenAiConfluenceImpactSummarizer implements ConfluenceImpactSummarizer {
-  readonly provider = "openai";
-  readonly model: string;
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
-  private readonly fetchFn: typeof fetch;
+export class LlmConfluenceImpactSummarizer implements ConfluenceImpactSummarizer {
+  private readonly client: LlmTextClient;
   private readonly provenance: ToolProvenance[] = [];
   private readonly warnings: Warning[] = [];
 
-  constructor(options: OpenAiConfluenceImpactSummarizerOptions) {
-    this.apiKey = options.apiKey;
-    this.model = options.model;
-    this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "https://api.openai.com/v1";
-    this.fetchFn = options.fetchFn ?? fetch;
+  constructor(options: LlmConfluenceImpactSummarizerOptions) {
+    this.client = options.client;
+  }
+
+  get provider(): string {
+    return this.client.provider;
+  }
+
+  get model(): string {
+    return this.client.model;
   }
 
   async summarize(input: ConfluenceImpactInput): Promise<ConfluenceImpact> {
     const calledAt = new Date().toISOString();
 
     try {
-      const payload = await postOpenAiResponses({
-        apiKey: this.apiKey,
-        baseUrl: this.baseUrl,
-        fetchFn: this.fetchFn,
-        body: {
-          model: this.model,
-          input: [
-            {
-              role: "system",
-              content: juanaSystemPrompt(
-                "Map explicitly linked Confluence page content to its impact on a Jira ticket. Use only the provided JSON. Return strict JSON with summary, ticketRelevance, impactedAreas, decisionsOrConstraints, risks, and testingNotes. Use Confluence only when the supplied page is clearly relevant to the ticket; otherwise state the relevance is weak or unclear.",
-              ),
-            },
-            {
-              role: "user",
-              content: buildPrompt(input),
-            },
-          ],
-        },
+      const text = await this.client.generateText({
+        operation: "summarizeConfluenceImpact",
+        systemPrompt: juanaSystemPrompt(
+          "Map explicitly linked Confluence page content to its impact on a Jira ticket. Use only the provided JSON. Return strict JSON with summary, ticketRelevance, impactedAreas, decisionsOrConstraints, risks, and testingNotes. Use Confluence only when the supplied page is clearly relevant to the ticket; otherwise state the relevance is weak or unclear.",
+        ),
+        userPrompt: buildPrompt(input),
       });
-      const text = extractOutputText(payload);
       const parsed = parseJsonObject(text);
-      this.provenance.push({ method: "summarizeConfluenceImpact", toolName: "openai:responses", calledAt, success: true });
+      this.provenance.push({ method: "summarizeConfluenceImpact", toolName: this.client.toolName, calledAt, success: true });
       return ConfluenceImpactSchema.parse(parsed);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.provenance.push({ method: "summarizeConfluenceImpact", toolName: "openai:responses", calledAt, success: false, message });
+      this.provenance.push({ method: "summarizeConfluenceImpact", toolName: this.client.toolName, calledAt, success: false, message });
       throw error;
     }
   }

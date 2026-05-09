@@ -1,0 +1,4 @@
+- Direct LLM providers currently cover OpenAI and Anthropic. Additional providers need a direct client or an external OpenAI-compatible gateway.
+- Phoenix observability is optional and reports token/cost data from provider usage metadata. It is not a hard budget guardrail and does not replace provider-side billing limits.
+- for every case it pulls the context and we could cache or reuse somehow the data
+- 

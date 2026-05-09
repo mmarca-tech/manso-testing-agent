@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { parseArgs } from "node:util";
+import { dirname } from "node:path";
 import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import { ContextPackSchema } from "./domain/contextPack/schema.js";
 import { AzureDevOpsClient } from "./integrations/azureDevOps/client.js";
 import { AzureDevOpsPullRequestDiffSource } from "./integrations/azureDevOps/pullRequestDiffSource.js";
-import { OpenAiResponsesSummarizer } from "./integrations/openai/responsesSummarizer.js";
+import { createLlmTextClient } from "./integrations/llm/factory.js";
+import { LlmPullRequestSummarizer } from "./integrations/llm/adapters/pullRequestSummarizer.js";
+import { flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
 import { writePrChangesPack } from "./output/pr-changes/writer.js";
+import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
+import { parseCommonContextArgs, resolveContextPath, type CommonContextArgs } from "./shared/cliArgs.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
 import { extractPrChanges } from "./workflows/pr-changes/extractor.js";
 
 async function main(): Promise<void> {
-  const args = parseCliArgs();
+  const args = parseCommonContextArgs();
   const logProgress = createProgressLogger("summarize-pr-changes");
 
   if (args.help) {
@@ -21,10 +24,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  try {
+    await runPrChanges(args, logProgress);
+  } finally {
+    await flushPhoenixTelemetry();
+  }
+}
+
+export async function runPrChanges(args: ParsedArgs, logProgress = createProgressLogger("summarize-pr-changes")): Promise<{ jsonPath: string; markdownPath: string } | undefined> {
   const contextPath = resolveContextPath(args);
   logProgress(`Loading context from ${contextPath}.`);
   const context = ContextPackSchema.parse(JSON.parse(await readFile(contextPath, "utf8")));
   logProgress(`Loaded context for ${context.ticket.key}: ${context.development.pullRequests.length} linked pull request(s).`);
+  if (context.development.pullRequests.length === 0) {
+    logProgress("No linked pull requests found; skipping pull request change extraction.");
+    return undefined;
+  }
+
   logProgress("Loading runtime configuration.");
   const config = await loadRuntimeConfig({
     ...(args.configPath ? { configPath: args.configPath } : {}),
@@ -34,17 +50,14 @@ async function main(): Promise<void> {
     throw new CliError("Missing Azure DevOps token. Set AZURE_DEVOPS_PAT, AZURE_DEVOPS_TOKEN, or SYSTEM_ACCESSTOKEN.");
   }
 
-  if (!config.openAi) {
-    throw new CliError("Missing OpenAI config. Set OPENAI_API_KEY, and optionally OPENAI_MODEL.");
+  if (!config.llm) {
+    throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
-  logProgress(`Using OpenAI model ${config.openAi.model}.`);
+  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   const diffSource = new AzureDevOpsPullRequestDiffSource(new AzureDevOpsClient({ token: config.azureDevOps.token }));
-  const summarizer = new OpenAiResponsesSummarizer({
-    apiKey: config.openAi.apiKey,
-    model: config.openAi.model,
-    ...(config.openAi.baseUrl ? { baseUrl: config.openAi.baseUrl } : {}),
-  });
+  const summarizer = new LlmPullRequestSummarizer({ client: llmClient });
   logProgress("Starting pull request change summary workflow.");
   const pack = await extractPrChanges(context, diffSource, summarizer, { sourceContextPath: contextPath, onProgress: logProgress });
   logProgress(`Writing PR changes outputs to ${dirname(contextPath)}.`);
@@ -55,48 +68,10 @@ async function main(): Promise<void> {
   if (pack.warnings.length > 0) {
     console.warn(`Completed with ${pack.warnings.length} warning(s). See pr-changes.json/pr-changes.md.`);
   }
+  return { jsonPath: result.jsonPath, markdownPath: result.markdownPath };
 }
 
-interface ParsedArgs {
-  issue?: string;
-  outDir: string;
-  contextPath?: string;
-  configPath?: string;
-  help: boolean;
-}
-
-function parseCliArgs(): ParsedArgs {
-  const parsed = parseArgs({
-    options: {
-      issue: { type: "string" },
-      out: { type: "string" },
-      context: { type: "string" },
-      config: { type: "string" },
-      help: { type: "boolean", short: "h" },
-    },
-    allowPositionals: false,
-  });
-
-  return {
-    ...(parsed.values.issue ? { issue: parsed.values.issue } : {}),
-    outDir: parsed.values.out ?? "./out",
-    ...(parsed.values.context ? { contextPath: parsed.values.context } : {}),
-    ...(parsed.values.config ? { configPath: parsed.values.config } : {}),
-    help: parsed.values.help ?? false,
-  };
-}
-
-function resolveContextPath(args: ParsedArgs): string {
-  if (args.contextPath) {
-    return args.contextPath;
-  }
-
-  if (!args.issue) {
-    throw new CliError("Missing --context or --issue value.");
-  }
-
-  return join(args.outDir, args.issue, "context.json");
-}
+export type ParsedArgs = CommonContextArgs;
 
 function printHelp(): void {
   console.log(`PR Changes Summarizer
@@ -114,16 +89,4 @@ Options:
 `);
 }
 
-class CliError extends Error {}
-
-main().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    console.error(error.message);
-  } else if (error instanceof Error) {
-    console.error(error.stack ?? error.message);
-  } else {
-    console.error(String(error));
-  }
-
-  process.exitCode = 1;
-});
+rejectInternalCliEntrypoint(import.meta.url, "generate-xray-tests --issue <key> --out <dir>");

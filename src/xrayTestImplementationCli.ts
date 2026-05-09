@@ -1,64 +1,161 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { dirname, resolve } from "node:path";
 import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import type { ToolProvenance, Warning } from "./domain/contextPack/schema.js";
-import {
-  XRAY_TEST_IMPLEMENTATION_SCHEMA_VERSION,
-  XrayTestImplementationPackSchema,
-} from "./domain/xrayTestImplementation/schema.js";
 import type {
   XrayTestImplementationCommandResult,
-  XrayTestImplementationGuidanceFile,
-  XrayTestImplementationPack,
+  XrayTestImplementationHealingAttempt,
   XrayTestImplementationPullRequest,
 } from "./domain/xrayTestImplementation/schema.js";
 import { XrayTestGenerationPackSchema } from "./domain/xrayTestGeneration/schema.js";
-import type { XrayTestGenerationPack } from "./domain/xrayTestGeneration/schema.js";
 import { AzureDevOpsClient } from "./integrations/azureDevOps/client.js";
 import {
   AzureDevOpsPullRequestCreator,
   resolveAzureDevOpsRepository,
 } from "./integrations/azureDevOps/pullRequestCreator.js";
+import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
 import {
-  detectDefaultTargetBranch,
   gitCurrentHeadSha,
   gitCurrentRemoteUrl,
-  gitStatusPorcelain,
-  parseGitChangedFiles,
   runGit,
-  runShellCommand,
 } from "./integrations/git/localGit.js";
+import { runContextExtractor } from "./contextExtractorCli.js";
 import { writeXrayTestImplementationPack } from "./output/xray-test-implementation/writer.js";
+import { CliError, handleCliError, isCliEntrypoint } from "./shared/cli.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
+import { runGenerateXrayTests } from "./xrayTestGenerationCli.js";
 import {
-  DEFAULT_REPO_GUIDANCE_PATHS,
   buildXrayTestImplementationPrompt,
+  DEFAULT_REPO_GUIDANCE_PATHS,
+  type XrayTestImplementationGuidanceContent,
 } from "./workflows/xray-test-implementation/prompt.js";
-import type { XrayTestImplementationGuidanceContent } from "./workflows/xray-test-implementation/prompt.js";
+import {
+  parseXrayTestImplementationArgs,
+  printXrayTestImplementationHelp,
+  promptOnlyReason,
+  resolveImplementationCommands,
+  resolvePromptPath,
+  resolveXrayTestGenerationPath,
+  type ParsedArgs,
+} from "./workflows/xray-test-implementation/implementationArgs.js";
+import {
+  assertCleanWorktree,
+  buildCommandEnvironment,
+  checkoutImplementationBranch,
+  collectImplementationChangedFiles,
+  defaultImplementationBranch,
+  normalizeBranchName,
+  resolveTargetBranch,
+} from "./workflows/xray-test-implementation/implementationGit.js";
+import {
+  buildXrayTestImplementationPack,
+  writeFailedImplementationPack,
+} from "./workflows/xray-test-implementation/implementationPackWriter.js";
+import {
+  runCheckedShellCommand,
+  runShellCommandResult,
+  runVerificationHealingLoop,
+} from "./workflows/xray-test-implementation/verificationHealing.js";
+
+export type { ParsedArgs } from "./workflows/xray-test-implementation/implementationArgs.js";
 
 async function main(): Promise<void> {
-  const args = parseCliArgs();
-  const logProgress = createProgressLogger("implement-xray-tests");
+  const args = parseXrayTestImplementationArgs();
 
   if (args.help) {
-    printHelp();
+    printXrayTestImplementationHelp();
     return;
   }
 
+  try {
+    await runXrayTestImplementation(args);
+  } finally {
+    await flushPhoenixTelemetry();
+  }
+}
+
+export async function runXrayTestImplementation(
+  args: ParsedArgs,
+  logProgress = createProgressLogger("implement-xray-tests"),
+): Promise<void> {
+  const config = await loadRuntimeConfig({
+    ...(args.configPath ? { configPath: args.configPath } : {}),
+  });
+  const tracedWorkflow = createPhoenixTracedWorkflow(
+    (input: ParsedArgs) => runXrayTestImplementationUntraced(input, logProgress, config),
+    config.observability?.phoenix,
+    {
+      name: "workflow.implement-xray-tests",
+      attributes: {
+        "workflow.name": "implement-xray-tests",
+        ...(args.issue ? { "workflow.issue": args.issue } : {}),
+        "workflow.prompt_only": args.promptOnly,
+        "workflow.dry_run": args.dryRun,
+      },
+      input: (input) => ({
+        issue: input.issue,
+        xrayTestGenerationPath: input.xrayTestGenerationPath,
+        outDir: input.outDir,
+        repoRoot: input.repoRoot,
+        testDesignEnabled: input.testDesignEnabled,
+        promptOnly: input.promptOnly,
+        dryRun: input.dryRun,
+      }),
+      output: () => ({ status: "completed" }),
+    },
+  );
+
+  await tracedWorkflow(args);
+}
+
+async function runXrayTestImplementationUntraced(
+  args: ParsedArgs,
+  logProgress: (message: string) => void,
+  config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+): Promise<void> {
+  const xrayTestGenerationPath = await resolveImplementationGenerationPack(args, config, logProgress);
+  await runTracedImplementationFromPack(
+    {
+      ...args,
+      xrayTestGenerationPath,
+    },
+    config,
+    logProgress,
+  );
+}
+
+export async function runXrayTestImplementationFromPack(
+  args: ParsedArgs,
+  logProgress = createProgressLogger("implement-xray-tests"),
+): Promise<void> {
   const repoRoot = resolve(args.repoRoot);
   const xrayTestGenerationPath = resolveXrayTestGenerationPath(args);
   const outputDir = dirname(xrayTestGenerationPath);
   logProgress(`Loading Xray test generation pack from ${xrayTestGenerationPath}.`);
   const generation = XrayTestGenerationPackSchema.parse(JSON.parse(await readFile(xrayTestGenerationPath, "utf8")));
 
-  const branch = normalizeBranchName(args.branch ?? defaultImplementationBranch(generation.ticket.key));
-  const targetBranch = normalizeBranchName(args.targetBranch ?? process.env.SYSTEM_PULLREQUEST_TARGETBRANCH ?? (await detectDefaultTargetBranch(repoRoot)));
+  let branch = normalizeBranchName(args.branch ?? defaultImplementationBranch(generation.ticket.key));
+  const targetBranch = await resolveTargetBranch(repoRoot, args.targetBranch);
   if (branch === targetBranch) {
     throw new CliError(`Implementation branch must differ from the PR target/base branch (${targetBranch}).`);
   }
+  const warnings: Warning[] = [];
+  const tools: ToolProvenance[] = [];
+
+  if (args.reuseBranchIfPossible && !args.promptOnly) {
+    branch = await resolveReusableImplementationBranch({
+      args,
+      repoRoot,
+      issueKey: generation.ticket.key,
+      branch,
+      targetBranch,
+      tools,
+      logProgress,
+    });
+  }
+
   const guidancePaths = args.guidancePaths.length > 0 ? args.guidancePaths : [...DEFAULT_REPO_GUIDANCE_PATHS];
   logProgress(`Loading ${guidancePaths.length} repository guidance file(s) from ${repoRoot}.`);
   const guidanceFiles = await readGuidanceFiles(repoRoot, guidancePaths);
@@ -73,12 +170,10 @@ async function main(): Promise<void> {
     ...(args.verifyCommand ? { verifyCommand: args.verifyCommand } : {}),
   });
   const promptPath = resolvePromptPath(args, outputDir);
-  const warnings: Warning[] = [];
-  const tools: ToolProvenance[] = [];
 
-  if (args.promptOnly || args.dryRun) {
+  if (args.promptOnly) {
     await writePrompt(promptPath, prompt, logProgress, tools);
-    const pack = buildPack({
+    const pack = buildXrayTestImplementationPack({
       generation,
       xrayTestGenerationPath,
       repoRoot,
@@ -91,7 +186,7 @@ async function main(): Promise<void> {
       pushed: false,
       pullRequest: {
         status: "skipped",
-        warnings: [args.dryRun ? "Dry run mode; implementation command, git mutation, push, and PR creation were skipped." : "Prompt-only mode; implementation command, git mutation, push, and PR creation were skipped."],
+        warnings: [promptOnlyReason(args)],
       },
       tools,
       warnings,
@@ -103,40 +198,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const agentCommand = args.agentCommand ?? process.env.MANSO_TEST_IMPLEMENTATION_COMMAND;
-  if (!agentCommand) {
-    throw new CliError("Missing --agent-command or MANSO_TEST_IMPLEMENTATION_COMMAND. Use --prompt-only to only write the LLM prompt.");
-  }
-
-  const startingChangedFiles = parseGitChangedFiles(await gitStatusPorcelain(repoRoot));
-  if (!args.allowDirty) {
-    if (startingChangedFiles.length > 0) {
-      throw new CliError(`Refusing to implement tests with a dirty worktree. Commit, stash, or pass --allow-dirty. Current changes: ${startingChangedFiles.join(", ")}`);
-    }
-  }
-
-  logProgress(`Fetching PR target/base branch ${targetBranch} from origin.`);
-  await runGit(repoRoot, ["fetch", "origin", `${targetBranch}:refs/remotes/origin/${targetBranch}`]);
-  tools.push({
-    method: "fetchBaseBranch",
-    toolName: "git:fetch",
-    calledAt: new Date().toISOString(),
-    success: true,
+  const commands = resolveImplementationCommands(args);
+  const startingChangedFiles = await assertCleanWorktree(repoRoot, args.allowDirty);
+  const checkout = await checkoutImplementationBranch({
+    repoRoot,
+    branch,
+    targetBranch,
+    reuseBranchIfPossible: args.reuseBranchIfPossible,
+    tools,
+    logProgress,
   });
-
-  logProgress(`Creating implementation branch ${branch} from origin/${targetBranch}.`);
-  await runGit(repoRoot, ["checkout", "-b", branch, `origin/${targetBranch}`]);
-  tools.push({
-    method: "createImplementationBranch",
-    toolName: "git:checkout",
-    calledAt: new Date().toISOString(),
-    success: true,
-  });
-
   await writePrompt(promptPath, prompt, logProgress, tools);
 
   logProgress("Running test implementation agent command. The implementation prompt is passed on stdin and through MANSO_TEST_IMPLEMENTATION_PROMPT.");
-  const implementationCommand = await runCheckedShellCommand(agentCommand, repoRoot, buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch), prompt);
+  const implementationCommand = await runCheckedShellCommand(
+    commands.agentCommand,
+    repoRoot,
+    buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch),
+    prompt,
+  );
   tools.push({
     method: "runImplementationCommand",
     toolName: "shell:agent-command",
@@ -144,27 +224,40 @@ async function main(): Promise<void> {
     success: true,
   });
 
-  let changedFiles = filterImplementationChangedFiles(
-    parseGitChangedFiles(await gitStatusPorcelain(repoRoot)),
-    startingChangedFiles,
+  let healingPromptPaths: string[] = [];
+  let changedFiles = await collectImplementationChangedFiles({
     repoRoot,
+    startingChangedFiles,
     promptPath,
-  );
+    extraExcludedPaths: healingPromptPaths,
+  });
   if (changedFiles.length === 0) {
-    throw new CliError("Implementation command completed but did not leave any repository changes to commit.");
-  }
-  logProgress(`Implementation changed ${changedFiles.length} file(s).`);
+    if (!checkout.reusedExistingBranch) {
+      throw new CliError("Implementation command completed but did not leave any repository changes to commit.");
+    }
 
-  const verifyCommand = args.verifyCommand ?? process.env.MANSO_TEST_VERIFY_COMMAND;
-  const verification = verifyCommand
-    ? await runCheckedShellCommand(verifyCommand, repoRoot, buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch))
+    logProgress("Implementation command completed without repository changes; continuing with the reused implementation branch.");
+    warnings.push({
+      section: "implementation",
+      toolName: "shell:agent-command",
+      message: "Implementation command completed without repository changes; reused the existing implementation branch.",
+    });
+  } else {
+    logProgress(`Implementation changed ${changedFiles.length} file(s).`);
+  }
+
+  const verifyCommand = args.verifyCommand ?? nonEmpty(process.env.MANSO_TEST_VERIFY_COMMAND);
+  let verification = verifyCommand
+    ? await runShellCommandResult(verifyCommand, repoRoot, buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch), undefined, true)
     : undefined;
+  let healingAttempts: XrayTestImplementationHealingAttempt[] = [];
   if (verification) {
     tools.push({
       method: "runVerificationCommand",
       toolName: "shell:verify-command",
       calledAt: new Date().toISOString(),
-      success: true,
+      success: verification.exitCode === 0,
+      ...(verification.exitCode === 0 ? {} : { message: `Verification failed with exit code ${verification.exitCode}.` }),
     });
   } else {
     warnings.push({
@@ -173,36 +266,96 @@ async function main(): Promise<void> {
       message: "No verification command was provided. Set --verify-command or MANSO_TEST_VERIFY_COMMAND to run repository validation.",
     });
   }
-  changedFiles = filterImplementationChangedFiles(
-    parseGitChangedFiles(await gitStatusPorcelain(repoRoot)),
-    startingChangedFiles,
-    repoRoot,
-    promptPath,
-  );
-  if (changedFiles.length === 0) {
-    throw new CliError("No implementation changes remained after verification.");
+
+  if (verifyCommand && verification && verification.exitCode !== 0) {
+    const maxHealAttempts = args.noHeal ? 0 : args.healAttempts;
+    const healingResult = await runVerificationHealingLoop({
+      issueKey: generation.ticket.key,
+      repoRoot,
+      branch,
+      targetBranch,
+      promptPath,
+      outputDir,
+      verifyCommand,
+      healAgentCommand: commands.healAgentCommand,
+      maxHealAttempts,
+      initialVerification: verification,
+      healingPromptPaths,
+      getChangedFiles: (paths) => collectImplementationChangedFiles({
+        repoRoot,
+        startingChangedFiles,
+        promptPath,
+        extraExcludedPaths: paths,
+      }),
+      logProgress,
+      tools,
+    });
+    verification = healingResult.verification;
+    healingAttempts = healingResult.healingAttempts;
+    healingPromptPaths = healingResult.healingPromptPaths;
+    changedFiles = healingResult.changedFiles;
+
+    if (!healingResult.passed) {
+      const message = healingResult.failureMessage ?? `Verification failed after ${healingAttempts.length} healing attempt(s).`;
+      await writeFailedImplementationPack({
+        generation,
+        xrayTestGenerationPath,
+        repoRoot,
+        branch,
+        targetBranch,
+        promptPath,
+        guidanceFiles,
+        implementationCommand,
+        verification,
+        healingAttempts,
+        changedFiles,
+        tools,
+        warnings,
+        outputDir,
+        message,
+      });
+      throw new CliError(`${message} See xray-test-implementation.json/xray-test-implementation.md.`);
+    }
   }
 
-  logProgress("Committing implementation changes.");
-  await runGit(repoRoot, ["add", "-A", "--", ...changedFiles]);
-  const commitMessage = args.commitMessage ?? `${generation.ticket.key}: implement generated Xray tests`;
-  await runGit(repoRoot, ["commit", "-m", commitMessage]);
-  const commitSha = await gitCurrentHeadSha(repoRoot);
-  tools.push({
-    method: "commitImplementationChanges",
-    toolName: "git:commit",
-    calledAt: new Date().toISOString(),
-    success: true,
+  changedFiles = await collectImplementationChangedFiles({
+    repoRoot,
+    startingChangedFiles,
+    promptPath,
+    extraExcludedPaths: healingPromptPaths,
   });
+  if (changedFiles.length === 0) {
+    if (!checkout.reusedExistingBranch) {
+      throw new CliError("No implementation changes remained after verification.");
+    }
 
-  logProgress(`Pushing implementation branch ${branch} to origin.`);
-  await runGit(repoRoot, ["push", "-u", "origin", branch]);
-  tools.push({
-    method: "pushImplementationBranch",
-    toolName: "git:push",
-    calledAt: new Date().toISOString(),
-    success: true,
-  });
+    logProgress("No implementation changes remained after verification; skipping commit and push for the reused branch.");
+  }
+
+  let pushed = false;
+  if (changedFiles.length > 0) {
+    logProgress("Committing implementation changes.");
+    await runGit(repoRoot, ["add", "-A", "--", ...changedFiles]);
+    const commitMessage = args.commitMessage ?? `${generation.ticket.key}: implement generated Xray tests`;
+    await runGit(repoRoot, ["commit", "-m", commitMessage]);
+    tools.push({
+      method: "commitImplementationChanges",
+      toolName: "git:commit",
+      calledAt: new Date().toISOString(),
+      success: true,
+    });
+
+    logProgress(`Pushing implementation branch ${branch} to origin.`);
+    await runGit(repoRoot, ["push", "-u", "origin", branch]);
+    tools.push({
+      method: "pushImplementationBranch",
+      toolName: "git:push",
+      calledAt: new Date().toISOString(),
+      success: true,
+    });
+    pushed = true;
+  }
+  const commitSha = await gitCurrentHeadSha(repoRoot);
 
   const pullRequest = await createPullRequest({
     args,
@@ -215,7 +368,7 @@ async function main(): Promise<void> {
     logProgress,
   });
 
-  const pack = buildPack({
+  const pack = buildXrayTestImplementationPack({
     generation,
     xrayTestGenerationPath,
     repoRoot,
@@ -226,9 +379,10 @@ async function main(): Promise<void> {
     status: "completed",
     command: implementationCommand,
     ...(verification ? { verification } : {}),
+    ...(healingAttempts.length > 0 ? { healingAttempts } : {}),
     changedFiles,
     commitSha,
-    pushed: true,
+    pushed,
     pullRequest,
     tools,
     warnings,
@@ -245,88 +399,97 @@ async function main(): Promise<void> {
   }
 }
 
-interface ParsedArgs {
-  issue?: string;
-  outDir: string;
-  xrayTestGenerationPath?: string;
-  repoRoot: string;
-  guidancePaths: string[];
-  promptPath?: string;
-  agentCommand?: string;
-  verifyCommand?: string;
-  branch?: string;
-  targetBranch?: string;
-  commitMessage?: string;
-  prTitle?: string;
-  prDescription?: string;
-  configPath?: string;
-  promptOnly: boolean;
-  dryRun: boolean;
-  allowDirty: boolean;
-  help: boolean;
-}
-
-function parseCliArgs(): ParsedArgs {
-  const parsed = parseArgs({
-    options: {
-      issue: { type: "string" },
-      out: { type: "string" },
-      "xray-test-generation": { type: "string" },
-      repo: { type: "string" },
-      guidance: { type: "string", multiple: true },
-      prompt: { type: "string" },
-      "agent-command": { type: "string" },
-      "verify-command": { type: "string" },
-      branch: { type: "string" },
-      "target-branch": { type: "string" },
-      "commit-message": { type: "string" },
-      "pr-title": { type: "string" },
-      "pr-description": { type: "string" },
-      config: { type: "string" },
-      "prompt-only": { type: "boolean" },
-      "dry-run": { type: "boolean" },
-      "allow-dirty": { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-    },
-    allowPositionals: false,
-  });
-
-  return {
-    ...(parsed.values.issue ? { issue: parsed.values.issue } : {}),
-    outDir: parsed.values.out ?? "./out",
-    ...(parsed.values["xray-test-generation"] ? { xrayTestGenerationPath: parsed.values["xray-test-generation"] } : {}),
-    repoRoot: parsed.values.repo ?? process.cwd(),
-    guidancePaths: parsed.values.guidance ?? [],
-    ...(parsed.values.prompt ? { promptPath: parsed.values.prompt } : {}),
-    ...(parsed.values["agent-command"] ? { agentCommand: parsed.values["agent-command"] } : {}),
-    ...(parsed.values["verify-command"] ? { verifyCommand: parsed.values["verify-command"] } : {}),
-    ...(parsed.values.branch ? { branch: parsed.values.branch } : {}),
-    ...(parsed.values["target-branch"] ? { targetBranch: parsed.values["target-branch"] } : {}),
-    ...(parsed.values["commit-message"] ? { commitMessage: parsed.values["commit-message"] } : {}),
-    ...(parsed.values["pr-title"] ? { prTitle: parsed.values["pr-title"] } : {}),
-    ...(parsed.values["pr-description"] ? { prDescription: parsed.values["pr-description"] } : {}),
-    ...(parsed.values.config ? { configPath: parsed.values.config } : {}),
-    promptOnly: parsed.values["prompt-only"] ?? false,
-    dryRun: parsed.values["dry-run"] ?? false,
-    allowDirty: parsed.values["allow-dirty"] ?? false,
-    help: parsed.values.help ?? false,
-  };
-}
-
-function resolveXrayTestGenerationPath(args: ParsedArgs): string {
+async function resolveImplementationGenerationPack(
+  args: ParsedArgs,
+  config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+  logProgress: (message: string) => void,
+): Promise<string> {
   if (args.xrayTestGenerationPath) {
-    return resolve(args.xrayTestGenerationPath);
+    logProgress(`Using explicit Xray test generation pack ${args.xrayTestGenerationPath}.`);
+    return args.xrayTestGenerationPath;
   }
 
   if (!args.issue) {
-    throw new CliError("Missing --xray-test-generation or --issue value.");
+    throw new CliError("Missing --issue or --xray-test-generation value.");
   }
 
-  return resolve(join(args.outDir, args.issue, "xray-test-generation.json"));
+  const testDesignEnabled = args.testDesignEnabled ?? true;
+  if (testDesignEnabled) {
+    logProgress("Test design is enabled; running generate-xray-tests before implementation.");
+    const result = await runGenerateXrayTests(
+      {
+        issue: args.issue,
+        outDir: args.outDir,
+        ...(args.configPath ? { configPath: args.configPath } : {}),
+        dryRun: args.dryRun,
+        help: false,
+      },
+      logProgress,
+    );
+    return result.jsonPath;
+  }
+
+  logProgress("Test design is disabled; extracting existing linked Xray tests from the ticket.");
+  const tracedContextExtractor = createPhoenixTracedWorkflow(
+    (input: ParsedArgs) => runContextExtractor({
+      ...(input.issue ? { issue: input.issue } : {}),
+      outDir: input.outDir,
+      ...(input.configPath ? { configPath: input.configPath } : {}),
+      help: false,
+    }, logProgress),
+    config.observability?.phoenix,
+    {
+      name: "task.context-extractor",
+      attributes: {
+        "workflow.name": "context-extractor",
+        "workflow.issue": args.issue,
+      },
+      input: (input) => ({
+        issue: input.issue,
+        outDir: input.outDir,
+        configPath: input.configPath,
+      }),
+      output: (output) => output,
+    },
+  );
+  const contextResult = await tracedContextExtractor(args);
+  if (!contextResult.xrayGenerationPath) {
+    throw new CliError(`No linked Xray tests were found on ${args.issue}; cannot implement existing test cases with --TestDesignEnabled false.`);
+  }
+
+  return contextResult.xrayGenerationPath;
 }
 
-function resolvePromptPath(args: ParsedArgs, outputDir: string): string {
-  return resolve(args.promptPath ?? join(outputDir, "xray-test-implementation-prompt.md"));
+async function runTracedImplementationFromPack(
+  args: ParsedArgs,
+  config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+  logProgress: (message: string) => void,
+): Promise<void> {
+  const tracedImplementation = createPhoenixTracedWorkflow(
+    (input: ParsedArgs) => runXrayTestImplementationFromPack(input, logProgress),
+    config.observability?.phoenix,
+    {
+      name: "workflow.test-implementation",
+      attributes: {
+        "workflow.name": "test-implementation",
+        ...(args.issue ? { "workflow.issue": args.issue } : {}),
+        "workflow.prompt_only": args.promptOnly,
+        "workflow.dry_run": args.dryRun,
+      },
+      input: (input) => ({
+        issue: input.issue,
+        xrayTestGenerationPath: input.xrayTestGenerationPath,
+        repoRoot: input.repoRoot,
+        branch: input.branch,
+        targetBranch: input.targetBranch,
+        promptOnly: input.promptOnly,
+        dryRun: input.dryRun,
+      }),
+      output: () => ({ status: "completed" }),
+    },
+  );
+
+  await tracedImplementation(args);
 }
 
 async function readGuidanceFiles(repoRoot: string, paths: string[]): Promise<XrayTestImplementationGuidanceContent[]> {
@@ -362,49 +525,6 @@ async function writePrompt(
   });
 }
 
-function filterImplementationChangedFiles(afterFiles: string[], startingFiles: string[], repoRoot: string, promptPath: string): string[] {
-  const starting = new Set(startingFiles);
-  const promptRelativePath = relativeGitPath(repoRoot, promptPath);
-  return afterFiles.filter((file) => !starting.has(file) && file !== promptRelativePath);
-}
-
-function relativeGitPath(repoRoot: string, path: string): string | undefined {
-  const relativePath = relative(repoRoot, path).replace(/\\/g, "/");
-  if (relativePath.startsWith("../") || relativePath === ".." || /^[A-Za-z]:\//.test(relativePath)) {
-    return undefined;
-  }
-
-  return relativePath;
-}
-
-function buildCommandEnvironment(promptPath: string, issueKey: string, branch: string, targetBranch: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    MANSO_TEST_IMPLEMENTATION_PROMPT: promptPath,
-    MANSO_TEST_ISSUE: issueKey,
-    MANSO_TEST_BRANCH: branch,
-    MANSO_TEST_TARGET_BRANCH: targetBranch,
-  };
-}
-
-async function runCheckedShellCommand(
-  command: string,
-  repoRoot: string,
-  env: NodeJS.ProcessEnv,
-  stdin?: string,
-): Promise<XrayTestImplementationCommandResult> {
-  const result = await runShellCommand(command, repoRoot, env, stdin);
-  if (result.exitCode !== 0) {
-    throw new Error(`${command} failed with exit code ${result.exitCode}.`);
-  }
-
-  return {
-    command: result.command,
-    exitCode: result.exitCode,
-    durationMs: result.durationMs,
-  };
-}
-
 interface CreatePullRequestOptions {
   args: ParsedArgs;
   repoRoot: string;
@@ -432,6 +552,34 @@ async function createPullRequest(options: CreatePullRequestOptions): Promise<Xra
   }
 
   const creator = new AzureDevOpsPullRequestCreator(new AzureDevOpsClient({ token: config.azureDevOps.token }));
+  if (options.args.reuseBranchIfPossible) {
+    options.logProgress("Looking for an existing active Azure DevOps pull request for the implementation branch.");
+    const existing = await creator.findActive({
+      repository,
+      sourceBranch: options.branch,
+      targetBranch: options.targetBranch,
+    });
+    if (existing) {
+      options.tools.push({
+        method: "findActivePullRequest",
+        toolName: "azure-devops:pullrequests",
+        calledAt: new Date().toISOString(),
+        success: true,
+      });
+
+      return {
+        status: "reused",
+        provider: "azure-devops",
+        id: existing.id,
+        url: existing.url,
+        title: options.title,
+        sourceBranch: options.branch,
+        targetBranch: options.targetBranch,
+        warnings: [],
+      };
+    }
+  }
+
   const created = await creator.create({
     repository,
     sourceBranch: options.branch,
@@ -458,60 +606,54 @@ async function createPullRequest(options: CreatePullRequestOptions): Promise<Xra
   };
 }
 
-interface BuildPackInput {
-  generation: XrayTestGenerationPack;
-  xrayTestGenerationPath: string;
+async function resolveReusableImplementationBranch(options: {
+  args: ParsedArgs;
   repoRoot: string;
+  issueKey: string;
   branch: string;
   targetBranch: string;
-  promptPath: string;
-  guidanceFiles: XrayTestImplementationGuidanceContent[];
-  status: "prompt-only" | "completed";
-  command?: XrayTestImplementationCommandResult;
-  verification?: XrayTestImplementationCommandResult;
-  changedFiles: string[];
-  commitSha?: string;
-  pushed: boolean;
-  pullRequest: XrayTestImplementationPullRequest;
   tools: ToolProvenance[];
-  warnings: Warning[];
-}
+  logProgress: (message: string) => void;
+}): Promise<string> {
+  const config = await loadRuntimeConfig({
+    ...(options.args.configPath ? { configPath: options.args.configPath } : {}),
+  });
+  if (!config.azureDevOps) {
+    options.logProgress("Cannot look for an existing implementation PR because Azure DevOps authentication is not configured.");
+    return options.branch;
+  }
 
-function buildPack(input: BuildPackInput): XrayTestImplementationPack {
-  const guidanceFiles: XrayTestImplementationGuidanceFile[] = input.guidanceFiles.map((file) => ({
-    path: file.path,
-    bytes: Buffer.byteLength(file.content, "utf8"),
-  }));
-  const pack: XrayTestImplementationPack = {
-    schemaVersion: XRAY_TEST_IMPLEMENTATION_SCHEMA_VERSION,
-    ticket: {
-      key: input.generation.ticket.key,
-      title: input.generation.ticket.title,
-      ...(input.generation.ticket.url ? { url: input.generation.ticket.url } : {}),
-    },
-    implementation: {
-      status: input.status,
-      repoRoot: input.repoRoot,
-      branch: input.branch,
-      targetBranch: input.targetBranch,
-      promptPath: input.promptPath,
-      guidanceFiles,
-      ...(input.command ? { command: input.command } : {}),
-      ...(input.verification ? { verification: input.verification } : {}),
-      changedFiles: input.changedFiles,
-      ...(input.commitSha ? { commitSha: input.commitSha } : {}),
-      pushed: input.pushed,
-    },
-    pullRequest: input.pullRequest,
-    provenance: {
-      generatedAt: new Date().toISOString(),
-      sourceXrayTestGenerationPath: input.xrayTestGenerationPath,
-      tools: input.tools,
-    },
-    warnings: input.warnings,
-  };
+  const remoteUrl = await gitCurrentRemoteUrl(options.repoRoot);
+  const repository = resolveAzureDevOpsRepository(remoteUrl);
+  if (!repository) {
+    options.logProgress(`Cannot look for an existing implementation PR because the Azure DevOps repository could not be resolved from origin remote ${remoteUrl}.`);
+    return options.branch;
+  }
 
-  return XrayTestImplementationPackSchema.parse(pack);
+  const creator = new AzureDevOpsPullRequestCreator(new AzureDevOpsClient({ token: config.azureDevOps.token }));
+  options.logProgress("Looking for an existing active Azure DevOps pull request to reuse before choosing the implementation branch.");
+  const existing = await creator.findActiveForBranchReuse({
+    repository,
+    sourceBranch: options.branch,
+    targetBranch: options.targetBranch,
+    issueKey: options.issueKey,
+  });
+  if (!existing?.sourceBranch) {
+    return options.branch;
+  }
+
+  const reusableBranch = normalizeBranchName(existing.sourceBranch);
+  if (reusableBranch !== options.branch) {
+    options.logProgress(`Reusing implementation branch ${reusableBranch} from active Azure DevOps PR ${existing.id}.`);
+  }
+
+  options.tools.push({
+    method: "findReusableImplementationBranch",
+    toolName: "azure-devops:pullrequests",
+    calledAt: new Date().toISOString(),
+    success: true,
+  });
+  return reusableBranch;
 }
 
 function defaultPullRequestDescription(
@@ -536,60 +678,10 @@ function defaultPullRequestDescription(
   return lines.join("\n");
 }
 
-function defaultImplementationBranch(issueKey: string): string {
-  return `tests/${issueKey.toLowerCase()}-xray-implementation`
-    .replace(/[^a-z0-9/_-]+/gi, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^[-/]+|[-/]+$/g, "");
+function nonEmpty(value: string | undefined): string | undefined {
+  return value === undefined || value.trim().length === 0 ? undefined : value;
 }
 
-function normalizeBranchName(branch: string): string {
-  return branch.replace(/^refs\/heads\//, "");
+if (isCliEntrypoint(import.meta.url)) {
+  main().catch(handleCliError);
 }
-
-function printHelp(): void {
-  console.log(`Xray Test Implementation
-
-Usage:
-  implement-xray-tests --issue ABC-123 --out ./out --agent-command "codex exec -"
-  implement-xray-tests --xray-test-generation ./out/ABC-123/xray-test-generation.json --prompt-only
-
-Options:
-  --issue <key>                    Jira issue key whose ./out/<key>/xray-test-generation.json should be used.
-  --out <dir>                      Output root directory. Defaults to ./out.
-  --xray-test-generation <path>    Explicit xray-test-generation.json path.
-  --repo <dir>                     Repository root to edit. Defaults to the current working directory.
-  --guidance <path>                Guidance file relative to repo root. May be repeated.
-                                   Defaults to architecture/test-architecture.md,
-                                   docs/testing/ai-test-generation.md,
-                                   .manso/testgen.md, and .manso/repo-conventions.json.
-  --prompt <path>                  Prompt output path. Defaults next to xray-test-generation.json.
-  --agent-command <command>        Shell command that implements tests. Prompt is sent on stdin and
-                                   MANSO_TEST_IMPLEMENTATION_PROMPT points to the prompt file.
-  --verify-command <command>       Optional shell validation command to run before committing.
-  --branch <name>                  Implementation branch. Defaults to tests/<issue>-xray-implementation.
-  --target-branch <name>           PR target branch. Defaults to origin HEAD or main.
-  --commit-message <message>       Commit message.
-  --pr-title <title>               Pull request title.
-  --pr-description <text>          Pull request description.
-  --config <path>                  Optional JSON config for non-secret overrides.
-  --prompt-only                    Write the LLM prompt and output pack without editing git.
-  --dry-run                        Alias for prompt-only with dry-run wording.
-  --allow-dirty                    Allow starting with a dirty worktree.
-  -h, --help                       Show this help.
-`);
-}
-
-class CliError extends Error {}
-
-main().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    console.error(error.message);
-  } else if (error instanceof Error) {
-    console.error(error.stack ?? error.message);
-  } else {
-    console.error(String(error));
-  }
-
-  process.exitCode = 1;
-});

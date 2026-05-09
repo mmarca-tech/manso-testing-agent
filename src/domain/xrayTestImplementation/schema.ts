@@ -15,12 +15,24 @@ export const XrayTestImplementationCommandResultSchema = z
     command: z.string().min(1),
     exitCode: z.number().int(),
     durationMs: z.number().int().nonnegative(),
+    stdout: z.string().optional(),
+    stderr: z.string().optional(),
+  })
+  .strict();
+
+export const XrayTestImplementationHealingAttemptSchema = z
+  .object({
+    attempt: z.number().int().positive(),
+    promptPath: z.string().min(1),
+    command: XrayTestImplementationCommandResultSchema,
+    verification: XrayTestImplementationCommandResultSchema,
+    changedFiles: z.array(z.string()),
   })
   .strict();
 
 export const XrayTestImplementationResultSchema = z
   .object({
-    status: z.enum(["prompt-only", "completed"]),
+    status: z.enum(["prompt-only", "completed", "failed"]),
     repoRoot: z.string().min(1),
     branch: z.string().min(1),
     targetBranch: z.string().min(1),
@@ -28,6 +40,7 @@ export const XrayTestImplementationResultSchema = z
     guidanceFiles: z.array(XrayTestImplementationGuidanceFileSchema),
     command: XrayTestImplementationCommandResultSchema.optional(),
     verification: XrayTestImplementationCommandResultSchema.optional(),
+    healingAttempts: z.array(XrayTestImplementationHealingAttemptSchema).optional(),
     changedFiles: z.array(z.string()),
     commitSha: z.string().min(1).optional(),
     pushed: z.boolean(),
@@ -36,7 +49,7 @@ export const XrayTestImplementationResultSchema = z
 
 export const XrayTestImplementationPullRequestSchema = z
   .object({
-    status: z.enum(["created", "skipped"]),
+    status: z.enum(["created", "reused", "skipped"]),
     provider: z.string().min(1).optional(),
     id: z.number().int().positive().optional(),
     url: z.string().min(1).optional(),
@@ -72,6 +85,7 @@ export const XrayTestImplementationPackSchema = z
 
 export type XrayTestImplementationGuidanceFile = z.infer<typeof XrayTestImplementationGuidanceFileSchema>;
 export type XrayTestImplementationCommandResult = z.infer<typeof XrayTestImplementationCommandResultSchema>;
+export type XrayTestImplementationHealingAttempt = z.infer<typeof XrayTestImplementationHealingAttemptSchema>;
 export type XrayTestImplementationResult = z.infer<typeof XrayTestImplementationResultSchema>;
 export type XrayTestImplementationPullRequest = z.infer<typeof XrayTestImplementationPullRequestSchema>;
 export type XrayTestImplementationPack = z.infer<typeof XrayTestImplementationPackSchema>;

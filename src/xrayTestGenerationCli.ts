@@ -13,11 +13,15 @@ import type { ConfluenceImpactPack } from "./domain/confluenceImpact/schema.js";
 import type { PrChangesPack } from "./domain/prChanges/schema.js";
 import type { XrayTestReviewPack } from "./domain/xrayTestReview/schema.js";
 import { AtlassianRestClient } from "./integrations/atlassianRest/client.js";
-import { OpenAiXrayTestPlanner } from "./integrations/openai/xrayTestPlanner.js";
+import { createLlmTextClient } from "./integrations/llm/factory.js";
+import { LlmXrayTestPlanner } from "./integrations/llm/adapters/xrayTestPlanner.js";
+import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
 import { XrayCloudClient } from "./integrations/xray/client.js";
 import { XrayCloudTestSink } from "./integrations/xray/testSink.js";
 import { writeXrayTestGenerationPack } from "./output/xray-test-generation/writer.js";
+import { CliError, handleCliError, isCliEntrypoint } from "./shared/cli.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
+import { runContextExtractor } from "./contextExtractorCli.js";
 import { extractXrayTestGeneration } from "./workflows/xray-test-generation/extractor.js";
 
 async function main(): Promise<void> {
@@ -29,6 +33,100 @@ async function main(): Promise<void> {
     return;
   }
 
+  await runGenerateXrayTests(args, logProgress);
+}
+
+export async function runGenerateXrayTests(
+  args: ParsedArgs,
+  logProgress = createProgressLogger("generate-xray-tests"),
+): Promise<XrayTestGenerationCliResult> {
+  const config = await loadRuntimeConfig({
+    ...(args.configPath ? { configPath: args.configPath } : {}),
+  });
+  const tracedWorkflow = createPhoenixTracedWorkflow(
+    (input: ParsedArgs) => runGenerateXrayTestsUntraced(input, logProgress, config),
+    config.observability?.phoenix,
+    {
+      name: "workflow.generate-xray-tests",
+      attributes: {
+        "workflow.name": "generate-xray-tests",
+        ...(args.issue ? { "workflow.issue": args.issue } : {}),
+        "workflow.dry_run": args.dryRun,
+      },
+      input: (input) => ({
+        issue: input.issue,
+        contextPath: input.contextPath,
+        outDir: input.outDir,
+        dryRun: input.dryRun,
+        configPath: input.configPath,
+      }),
+      output: (output) => output,
+    },
+  );
+
+  return tracedWorkflow(args);
+}
+
+async function runGenerateXrayTestsUntraced(
+  args: ParsedArgs,
+  logProgress: (message: string) => void,
+  config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+): Promise<XrayTestGenerationCliResult> {
+  const contextExtraction = await runTracedContextExtraction(args, config, logProgress);
+  const result = await runXrayTestGenerationFromContext(
+    {
+      ...args,
+      contextPath: contextExtraction.contextPath,
+    },
+    logProgress,
+    config,
+  );
+
+  return {
+    contextPath: contextExtraction.contextPath,
+    jsonPath: result.jsonPath,
+    markdownPath: result.markdownPath,
+  };
+}
+
+async function runTracedContextExtraction(
+  args: ParsedArgs,
+  config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+  logProgress: (message: string) => void,
+): Promise<{ contextPath: string }> {
+  const tracedContextExtractor = createPhoenixTracedWorkflow(
+    (input: ParsedArgs) => runContextExtractor({
+      ...(input.issue ? { issue: input.issue } : {}),
+      outDir: input.outDir,
+      ...(input.contextPath ? { contextPath: input.contextPath } : {}),
+      ...(input.configPath ? { configPath: input.configPath } : {}),
+      help: false,
+    }, logProgress),
+    config.observability?.phoenix,
+    {
+      name: "task.context-extractor",
+      attributes: {
+        "workflow.name": "context-extractor",
+        ...(args.issue ? { "workflow.issue": args.issue } : {}),
+      },
+      input: (input) => ({
+        issue: input.issue,
+        contextPath: input.contextPath,
+        outDir: input.outDir,
+        configPath: input.configPath,
+      }),
+      output: (output) => output,
+    },
+  );
+
+  return tracedContextExtractor(args);
+}
+
+export async function runXrayTestGenerationFromContext(
+  args: ParsedArgs,
+  logProgress = createProgressLogger("generate-xray-tests"),
+  loadedConfig?: Awaited<ReturnType<typeof loadRuntimeConfig>>,
+): Promise<{ jsonPath: string; markdownPath: string }> {
   const contextPath = resolveContextPath(args);
   const outputDir = dirname(contextPath);
   logProgress(`Loading context from ${contextPath}.`);
@@ -57,12 +155,12 @@ async function main(): Promise<void> {
   );
 
   logProgress("Loading runtime configuration.");
-  const config = await loadRuntimeConfig({
+  const config = loadedConfig ?? await loadRuntimeConfig({
     ...(args.configPath ? { configPath: args.configPath } : {}),
   });
 
-  if (!config.openAi) {
-    throw new CliError("Missing OpenAI config. Set OPENAI_API_KEY, and optionally OPENAI_MODEL.");
+  if (!config.llm) {
+    throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
   if (!args.dryRun && !config.jiraRest) {
@@ -73,18 +171,15 @@ async function main(): Promise<void> {
     throw new CliError("Missing Xray Cloud config. Set XRAY_CLIENT_ID and XRAY_CLIENT_SECRET.");
   }
 
-  logProgress(`Using OpenAI model ${config.openAi.model}.`);
+  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   if (args.dryRun) {
     logProgress("Dry run mode is enabled; Jira and Xray writes will be skipped.");
   } else {
     logProgress(`Xray/Jira mutation mode is enabled. Xray base URL: ${config.xray?.baseUrl}.`);
   }
 
-  const planner = new OpenAiXrayTestPlanner({
-    apiKey: config.openAi.apiKey,
-    model: config.openAi.model,
-    ...(config.openAi.baseUrl ? { baseUrl: config.openAi.baseUrl } : {}),
-  });
+  const planner = new LlmXrayTestPlanner({ client: llmClient });
   const sink =
     args.dryRun || !config.jiraRest || !config.xray
       ? undefined
@@ -126,9 +221,11 @@ async function main(): Promise<void> {
   if (pack.warnings.length > 0) {
     console.warn(`Completed with ${pack.warnings.length} warning(s). See xray-test-generation.json/xray-test-generation.md.`);
   }
+
+  return result;
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
   issue?: string;
   outDir: string;
   contextPath?: string;
@@ -138,6 +235,12 @@ interface ParsedArgs {
   configPath?: string;
   dryRun: boolean;
   help: boolean;
+}
+
+export interface XrayTestGenerationCliResult {
+  contextPath: string;
+  jsonPath: string;
+  markdownPath: string;
 }
 
 function parseCliArgs(): ParsedArgs {
@@ -294,28 +397,18 @@ Usage:
   generate-xray-tests --issue ABC-123 --out ./out --dry-run
 
 Options:
-  --issue <key>                  Jira issue key whose ./out/<key>/context.json should be used.
+  --issue <key>                  Jira issue key to extract, enrich, design, and upload tests for.
   --out <dir>                    Output root directory. Defaults to ./out.
-  --context <path>               Explicit context.json path.
-  --xray-test-review <path>      Optional explicit xray-test-review.json path.
-  --pr-changes <path>            Optional explicit pr-changes.json path.
-  --confluence-impact <path>     Optional explicit confluence-impact.json path.
+  --context <path>               Optional existing context.json path to reuse as extraction input.
+  --xray-test-review <path>      Optional explicit existing-xray-test review pack.
+  --pr-changes <path>            Optional explicit PR changes pack.
+  --confluence-impact <path>     Optional explicit Confluence impact pack.
   --config <path>                Optional JSON config for non-secret overrides.
-  --dry-run                      Generate files without Jira/Xray mutations.
+  --dry-run                      Generate files without Jira/Xray mutations or Xray uploads.
   -h, --help                     Show this help.
 `);
 }
 
-class CliError extends Error {}
-
-main().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    console.error(error.message);
-  } else if (error instanceof Error) {
-    console.error(error.stack ?? error.message);
-  } else {
-    console.error(String(error));
-  }
-
-  process.exitCode = 1;
-});
+if (isCliEntrypoint(import.meta.url)) {
+  main().finally(flushPhoenixTelemetry).catch(handleCliError);
+}

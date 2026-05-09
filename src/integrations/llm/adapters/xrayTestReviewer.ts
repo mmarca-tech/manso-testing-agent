@@ -1,64 +1,49 @@
-import type { ToolProvenance, Warning } from "../../domain/contextPack/schema.js";
-import { XrayTestReviewAnalysisSchema } from "../../domain/xrayTestReview/schema.js";
-import type { XrayTestReviewAnalysis } from "../../domain/xrayTestReview/schema.js";
-import type { XrayTestReviewer, XrayTestReviewInput } from "../../workflows/xray-test-review/reviewer.js";
+import type { ToolProvenance, Warning } from "../../../domain/contextPack/schema.js";
+import { XrayTestReviewAnalysisSchema } from "../../../domain/xrayTestReview/schema.js";
+import type { XrayTestReviewAnalysis } from "../../../domain/xrayTestReview/schema.js";
+import type { XrayTestReviewer, XrayTestReviewInput } from "../../../workflows/xray-test-review/reviewer.js";
 import { juanaSystemPrompt } from "./juanaPersona.js";
-import { extractOutputText, parseJsonObject, postOpenAiResponses } from "./responsesClient.js";
+import { parseJsonObject } from "../json.js";
+import type { LlmTextClient } from "../types.js";
 
-export interface OpenAiXrayTestReviewerOptions {
-  apiKey: string;
-  model: string;
-  baseUrl?: string;
-  fetchFn?: typeof fetch;
+export interface LlmXrayTestReviewerOptions {
+  client: LlmTextClient;
 }
 
-export class OpenAiXrayTestReviewer implements XrayTestReviewer {
-  readonly provider = "openai";
-  readonly model: string;
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
-  private readonly fetchFn: typeof fetch;
+export class LlmXrayTestReviewer implements XrayTestReviewer {
+  private readonly client: LlmTextClient;
   private readonly provenance: ToolProvenance[] = [];
   private readonly warnings: Warning[] = [];
 
-  constructor(options: OpenAiXrayTestReviewerOptions) {
-    this.apiKey = options.apiKey;
-    this.model = options.model;
-    this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "https://api.openai.com/v1";
-    this.fetchFn = options.fetchFn ?? fetch;
+  constructor(options: LlmXrayTestReviewerOptions) {
+    this.client = options.client;
+  }
+
+  get provider(): string {
+    return this.client.provider;
+  }
+
+  get model(): string {
+    return this.client.model;
   }
 
   async review(input: XrayTestReviewInput): Promise<XrayTestReviewAnalysis> {
     const calledAt = new Date().toISOString();
 
     try {
-      const payload = await postOpenAiResponses({
-        apiKey: this.apiKey,
-        baseUrl: this.baseUrl,
-        fetchFn: this.fetchFn,
-        body: {
-          model: this.model,
-          input: [
-            {
-              role: "system",
-              content: juanaSystemPrompt(
-                "Review linked Xray test cases for a downstream test-generation workflow. Use only the provided JSON. Return strict JSON with overallSummary, coveredAcceptanceCriteria, gapsOrAmbiguities, and testCases. Identify what each test does, what acceptance criteria it covers, what risk it covers, and what cannot be confirmed from the available evidence.",
-              ),
-            },
-            {
-              role: "user",
-              content: buildPrompt(input),
-            },
-          ],
-        },
+      const text = await this.client.generateText({
+        operation: "reviewLinkedXrayTests",
+        systemPrompt: juanaSystemPrompt(
+          "Review linked Xray test cases for a downstream test-generation workflow. Use only the provided JSON. Return strict JSON with overallSummary, coveredAcceptanceCriteria, gapsOrAmbiguities, and testCases. Identify what each test does, what acceptance criteria it covers, what risk it covers, and what cannot be confirmed from the available evidence.",
+        ),
+        userPrompt: buildPrompt(input),
       });
-      const text = extractOutputText(payload);
       const parsed = parseJsonObject(text);
-      this.provenance.push({ method: "reviewLinkedXrayTests", toolName: "openai:responses", calledAt, success: true });
+      this.provenance.push({ method: "reviewLinkedXrayTests", toolName: this.client.toolName, calledAt, success: true });
       return XrayTestReviewAnalysisSchema.parse(parsed);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.provenance.push({ method: "reviewLinkedXrayTests", toolName: "openai:responses", calledAt, success: false, message });
+      this.provenance.push({ method: "reviewLinkedXrayTests", toolName: this.client.toolName, calledAt, success: false, message });
       throw error;
     }
   }

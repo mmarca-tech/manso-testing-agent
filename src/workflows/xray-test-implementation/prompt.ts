@@ -1,4 +1,5 @@
 import type { XrayTestGenerationPack } from "../../domain/xrayTestGeneration/schema.js";
+import type { XrayTestImplementationCommandResult } from "../../domain/xrayTestImplementation/schema.js";
 
 export const DEFAULT_REPO_GUIDANCE_PATHS = [
   "architecture/test-architecture.md",
@@ -22,6 +23,18 @@ export interface BuildXrayTestImplementationPromptInput {
   verifyCommand?: string;
 }
 
+export interface BuildXrayTestHealingPromptInput {
+  issueKey: string;
+  repoRoot: string;
+  branch: string;
+  targetBranch: string;
+  originalPromptPath: string;
+  attempt: number;
+  maxAttempts: number;
+  verification: XrayTestImplementationCommandResult;
+  changedFiles: string[];
+}
+
 export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementationPromptInput): string {
   const actionableTestCases = input.generation.plan.testCases.filter((testCase) => testCase.action === "create" || testCase.action === "update");
   const readyTestCases = actionableTestCases.filter((testCase) => testCase.readiness === "ready");
@@ -40,6 +53,7 @@ export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementa
   lines.push("- Preserve existing style and avoid broad refactors.");
   lines.push("- Run the repository validation command when practical and report the result.");
   lines.push("- When finished, summarize changed files, implemented Xray cases, skipped cases, and validation results.", "");
+  pushImplementationContract(lines);
   lines.push("## Repository", "");
   lines.push(`- Root: ${input.repoRoot}`);
   lines.push(`- Working branch: ${input.branch}`);
@@ -99,6 +113,59 @@ export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementa
   return `${lines.join("\n").replace(/\n{4,}/g, "\n\n\n").trim()}\n`;
 }
 
+export function buildXrayTestHealingPrompt(input: BuildXrayTestHealingPromptInput): string {
+  const lines: string[] = [];
+  lines.push(`# Heal Generated Xray Test Implementation for ${input.issueKey}`, "");
+  lines.push("You are editing the repository where this command is running. The initial generated Xray test implementation is already present, but verification failed.", "");
+  lines.push("## Operating Rules", "");
+  lines.push("- Fix only the generated or modified tests and directly necessary test support code.");
+  lines.push("- Do not start the implementation over.");
+  lines.push("- Do not broaden product code, workflow behavior, or unrelated test scope.");
+  lines.push("- Preserve Xray traceability and repository conventions from the original implementation prompt.");
+  lines.push("- Use the verification output below as the source of truth for this healing attempt.");
+  lines.push("- When finished, summarize the exact files changed and whether you ran verification.", "");
+  pushHealingContract(lines);
+  lines.push("## Repository", "");
+  lines.push(`- Root: ${input.repoRoot}`);
+  lines.push(`- Working branch: ${input.branch}`);
+  lines.push(`- Pull request target branch: ${input.targetBranch}`);
+  lines.push(`- Original implementation prompt: ${input.originalPromptPath}`);
+  lines.push(`- Healing attempt: ${input.attempt} of ${input.maxAttempts}`, "");
+  lines.push("## Current Changed Files", "");
+  pushList(lines, input.changedFiles);
+  lines.push("", "## Failed Verification", "");
+  lines.push(`- Command: ${input.verification.command}`);
+  lines.push(`- Exit code: ${input.verification.exitCode}`);
+  lines.push(`- Duration: ${input.verification.durationMs} ms`, "");
+  lines.push("### stdout", "", "```text", trimForPrompt(input.verification.stdout ?? ""), "```", "");
+  lines.push("### stderr", "", "```text", trimForPrompt(input.verification.stderr ?? ""), "```", "");
+
+  return `${lines.join("\n").replace(/\n{4,}/g, "\n\n\n").trim()}\n`;
+}
+
+function pushImplementationContract(lines: string[]): void {
+  lines.push("## Implementation Contract", "");
+  lines.push("- Treat implementation as test automation only, not product feature work.");
+  lines.push("- Implement only the provided Xray cases; do not invent new cases or update Xray issues.");
+  lines.push("- Keep changes scoped to automated tests, direct test support, and directly required test documentation.");
+  lines.push("- Use repository guidance and nearby tests as authority. If they conflict with Xray or Jira, follow repository guidance and report the conflict.");
+  lines.push("- Preserve Xray traceability by keeping the Xray key or manual title visible in the automated test.");
+  lines.push("- Prefer existing builders, helpers, fixtures, typed models, and assertion style over new abstractions.");
+  lines.push("- Implement one automated test per business scenario where practical; fold setup, cleanup, polling, and helper-only manual steps into helpers or assertions.");
+  lines.push("- Do not weaken assertions to make verification pass. If runtime behavior differs from source expectations, keep the expectation visible and report or block according to repository practice.");
+  lines.push("- Do not hardcode secrets, tenant-specific credentials, production URLs, or brittle timing assumptions.");
+  lines.push("- Use the narrowest practical validation for the changed tests when a validation command is not explicitly supplied.", "");
+}
+
+function pushHealingContract(lines: string[]): void {
+  lines.push("## Healing Contract", "");
+  lines.push("- Repair only the tests, test support, or directly required test documentation changed by the implementation attempt.");
+  lines.push("- Do not add new Xray scenarios, broaden product behavior, or rewrite unrelated repository code during healing.");
+  lines.push("- Preserve the original Xray scope and traceability from the implementation prompt.");
+  lines.push("- Do not weaken assertions only to make verification pass; keep source expectations visible and report or block according to repository practice.");
+  lines.push("- Re-run or reason against the requested verification command after changes, and report the result.", "");
+}
+
 function pushList(lines: string[], values: string[]): void {
   if (values.length === 0) {
     lines.push("- None");
@@ -108,4 +175,12 @@ function pushList(lines: string[], values: string[]): void {
   for (const value of values) {
     lines.push(`- ${value}`);
   }
+}
+
+function trimForPrompt(value: string, maxCharacters = 30000): string {
+  if (value.length <= maxCharacters) {
+    return value.trim();
+  }
+
+  return `[truncated to last ${maxCharacters} characters]\n${value.slice(-maxCharacters).trim()}`;
 }
