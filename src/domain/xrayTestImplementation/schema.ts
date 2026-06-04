@@ -10,6 +10,19 @@ export const XrayTestImplementationGuidanceFileSchema = z
   })
   .strict();
 
+export const XrayTestImplementationAgentUsageSchema = z
+  .object({
+    provider: z.enum(["openai", "anthropic"]),
+    model: z.string().min(1).optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+    cacheCreationInputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    reasoningOutputTokens: z.number().int().nonnegative().optional(),
+    totalCostUsd: z.number().nonnegative().optional(),
+  })
+  .strict();
+
 export const XrayTestImplementationCommandResultSchema = z
   .object({
     command: z.string().min(1),
@@ -17,6 +30,7 @@ export const XrayTestImplementationCommandResultSchema = z
     durationMs: z.number().int().nonnegative(),
     stdout: z.string().optional(),
     stderr: z.string().optional(),
+    usage: XrayTestImplementationAgentUsageSchema.optional(),
   })
   .strict();
 
@@ -84,6 +98,7 @@ export const XrayTestImplementationPackSchema = z
   .strict();
 
 export type XrayTestImplementationGuidanceFile = z.infer<typeof XrayTestImplementationGuidanceFileSchema>;
+export type XrayTestImplementationAgentUsage = z.infer<typeof XrayTestImplementationAgentUsageSchema>;
 export type XrayTestImplementationCommandResult = z.infer<typeof XrayTestImplementationCommandResultSchema>;
 export type XrayTestImplementationHealingAttempt = z.infer<typeof XrayTestImplementationHealingAttemptSchema>;
 export type XrayTestImplementationResult = z.infer<typeof XrayTestImplementationResultSchema>;

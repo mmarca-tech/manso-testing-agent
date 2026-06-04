@@ -34,7 +34,7 @@ export class LlmXrayTestPlanner implements XrayTestPlanner {
       const text = await this.client.generateText({
         operation: "planXrayTests",
         systemPrompt: juanaSystemPrompt(
-          "Generate a bounded Xray manual test-case plan from the provided workflow context. Use only the provided JSON. Return strict JSON with strategySummary, coverageGaps, and testCases. Use existing-test review input as the source of current coverage. Create only genuine coverage gaps. Every proposed create/update test must be traceable to a Jira requirement, PR diff clue, explicit Confluence reference, existing-test gap, or clearly stated risk in the input.",
+          "Generate a bounded Xray manual test-case plan from the provided workflow context. Use only the provided JSON. Return strict JSON with strategySummary, coverageGaps, and testCases. Use existing-test review input as the source of current Xray coverage. Create only genuine coverage gaps, and deprecate existing Xray tests only when they conflict with current acceptance criteria or validate obsolete behavior. Every proposed create/update/deprecate action must be traceable to a Jira requirement, PR diff clue, explicit Confluence reference, existing-test gap, or clearly stated risk in the input.",
         ),
         userPrompt: buildPrompt(input),
       });
@@ -140,12 +140,14 @@ function buildPrompt(input: XrayTestPlanningInput): string {
   return `Generate an Xray manual test-case plan for this Jira ticket.
 
 Rules:
-- Include every existing Xray test case in testCases with action "keep" or "update".
-- Use existingTestReview as the source for what existing tests already cover when it is present.
+- Include every existing Xray test case in testCases with action "keep", "update", or "deprecate".
+- Use existingTestReview as the source for what existing Xray tests already cover when it is present.
 - Do not re-review raw existing Xray test descriptions in this generation step.
 - Use action "update" only when the existing test should materially change; include existingTestKey.
+- Use action "keep" only to mean the existing Xray issue should stay unchanged in Jira/Xray. It does not mean automated repository coverage exists.
+- Use action "deprecate" only when an existing Xray test is obsolete, conflicts with the current acceptance criteria, or validates behavior that should no longer be accepted. Include existingTestKey and source-backed rationale.
 - Use action "create" for missing coverage only.
-- Every create/update test must include concrete manual steps.
+- Every create/update test must include concrete manual steps. Deprecate/keep cases may omit steps when the rationale and source evidence are sufficient.
 - Keep tests atomic and readable for manual QA.
 - Titles should be valid Jira summaries and mention the behavior under test.
 - Do not invent external requirements that are not supported by the input.
@@ -158,11 +160,11 @@ Rules:
 Required JSON shape:
 {
   "strategySummary": "concise summary of the generated test strategy",
-  "coverageGaps": ["gap covered by created or updated tests"],
+  "coverageGaps": ["gap covered by created/updated tests or obsolete existing coverage addressed by deprecation"],
   "testCases": [
     {
-      "action": "create | update | keep",
-      "existingTestKey": "TEST-123 only for update/keep",
+      "action": "create | update | keep | deprecate",
+      "existingTestKey": "TEST-123 only for update/keep/deprecate",
       "title": "Jira summary",
       "objective": "what this test proves",
       "priority": "low | medium | high",

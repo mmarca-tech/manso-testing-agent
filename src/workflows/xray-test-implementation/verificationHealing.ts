@@ -5,10 +5,16 @@ import type {
   XrayTestImplementationCommandResult,
   XrayTestImplementationHealingAttempt,
 } from "../../domain/xrayTestImplementation/schema.js";
+import { mirrorFileToMemory } from "../../memory/memoryCabin.js";
 import { runShellCommand, type ShellRunResult } from "../../integrations/git/localGit.js";
 import { CliError } from "../../shared/cli.js";
 import { buildXrayTestHealingPrompt } from "./prompt.js";
 import { buildCommandEnvironment } from "./implementationGit.js";
+import {
+  runImplementationAgent,
+  type ImplementationAgentRunner,
+} from "./agentRunner.js";
+import type { ObservabilityTelemetryConfig } from "../../integrations/llm/types.js";
 
 export async function runCheckedShellCommand(
   command: string,
@@ -43,7 +49,8 @@ export interface RunVerificationHealingLoopOptions {
   promptPath: string;
   outputDir?: string;
   verifyCommand: string;
-  healAgentCommand: string;
+  healAgentRunner: ImplementationAgentRunner;
+  telemetry?: ObservabilityTelemetryConfig;
   maxHealAttempts: number;
   initialVerification?: XrayTestImplementationCommandResult;
   healingPromptPaths?: string[];
@@ -105,19 +112,23 @@ export async function runVerificationHealingLoop(options: RunVerificationHealing
       verification,
       changedFiles,
     });
-    await writeHealingPrompt(healingPromptPath, healingPrompt, options.logProgress, tools);
+    await writeHealingPrompt(healingPromptPath, healingPrompt, options.issueKey, options.logProgress, tools);
 
-    options.logProgress(`Running healing agent command, attempt ${attempt} of ${options.maxHealAttempts}.`);
-    const healCommand = await runShellCommandResult(
-      options.healAgentCommand,
-      options.repoRoot,
-      buildCommandEnvironment(options.promptPath, options.issueKey, options.branch, options.targetBranch, healingPromptPath),
-      healingPrompt,
-      true,
+    options.logProgress(`Running healing agent, attempt ${attempt} of ${options.maxHealAttempts}.`);
+    const healCommand = await runImplementationAgent(
+      options.healAgentRunner,
+      {
+        issueKey: options.issueKey,
+        repoRoot: options.repoRoot,
+        prompt: healingPrompt,
+        env: buildCommandEnvironment(options.promptPath, options.issueKey, options.branch, options.targetBranch, healingPromptPath),
+        phase: "healing",
+      },
+      options.telemetry,
     );
     tools.push({
       method: "runHealingCommand",
-      toolName: "shell:heal-agent-command",
+      toolName: `agent:${options.healAgentRunner.kind}`,
       calledAt: new Date().toISOString(),
       success: healCommand.exitCode === 0,
       ...(healCommand.exitCode === 0 ? {} : { message: `Healing command failed with exit code ${healCommand.exitCode}.` }),
@@ -188,11 +199,18 @@ export function assertHealingPassed(result: VerificationHealingLoopResult): void
 async function writeHealingPrompt(
   promptPath: string,
   prompt: string,
+  issueKey: string,
   logProgress: (message: string) => void,
   tools: ToolProvenance[],
 ): Promise<void> {
   await mkdir(dirname(promptPath), { recursive: true });
   await writeFile(promptPath, prompt, "utf8");
+  await mirrorFileToMemory({
+    workflow: "xray-test-healing-prompt",
+    path: promptPath,
+    kind: "markdown",
+    scope: { type: "jira", id: issueKey },
+  });
   logProgress(`Wrote healing prompt to ${promptPath}.`);
   tools.push({
     method: "writeHealingPrompt",

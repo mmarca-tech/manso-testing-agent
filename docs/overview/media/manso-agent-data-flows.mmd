@@ -1,0 +1,33 @@
+flowchart LR
+    subgraph xray["Xray design and implementation"]
+        jira[Jira issue] --> context[context.json/md]
+        context --> enrichment[optional enrichment packs]
+        enrichment --> generation[xray-test-generation.json/md]
+        generation --> prompt[xray-test-implementation-prompt.md]
+        prompt --> agent[implementation agent]
+        agent --> healing[verification and healing]
+        healing --> implementation[xray-test-implementation.json/md]
+    end
+
+    subgraph release["Release notes"]
+        releaseIssue[Release Jira issue] --> linkedContext[linked issue context]
+        linkedContext --> releaseNotes[release-notes.json/md]
+        releaseNotes --> jiraUpdate[optional Jira field update]
+    end
+
+    subgraph review["Pull request review"]
+        pr[Azure DevOps PR] --> detectedTicket[detected Jira ticket]
+        detectedTicket --> prContext[PR diff and ticket context]
+        prContext --> codeReview[code-review.json/md]
+        codeReview --> prThread[optional PR thread]
+    end
+
+    classDef source fill:#fff6c7,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+    classDef artifact fill:#ffefef,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+    classDef process fill:#dff2f7,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+    classDef external fill:#e8f5e9,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+
+    class jira,releaseIssue,pr source;
+    class context,generation,prompt,implementation,releaseNotes,codeReview artifact;
+    class enrichment,agent,healing,linkedContext,detectedTicket,prContext process;
+    class jiraUpdate,prThread external;

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ContextPack } from "../../domain/contextPack/schema.js";
+import { mirrorArtifactSetToMemory } from "../../memory/memoryCabin.js";
 import { renderMarkdown } from "./renderer.js";
 
 export interface WriteResult {
@@ -17,6 +18,14 @@ export async function writeContextPack(context: ContextPack, outDir: string): Pr
   await mkdir(directory, { recursive: true });
   await writeFile(jsonPath, `${JSON.stringify(context, null, 2)}\n`, "utf8");
   await writeFile(markdownPath, renderMarkdown(context), "utf8");
+  await mirrorArtifactSetToMemory({
+    workflow: "context-pack",
+    directory,
+    files: [
+      { path: jsonPath, kind: "json" },
+      { path: markdownPath, kind: "markdown" },
+    ],
+  });
 
   return { directory, jsonPath, markdownPath };
 }

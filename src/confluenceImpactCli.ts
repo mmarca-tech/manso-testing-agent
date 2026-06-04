@@ -8,7 +8,7 @@ import { AtlassianRestClient } from "./integrations/atlassianRest/client.js";
 import { ConfluenceRestPageSource } from "./integrations/confluence/pageSource.js";
 import { LlmConfluenceImpactSummarizer } from "./integrations/llm/adapters/confluenceImpactSummarizer.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
-import { flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import { flushTelemetry } from "./integrations/llm/telemetry/observability.js";
 import { writeConfluenceImpactPack } from "./output/confluence-impact/writer.js";
 import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
 import { parseCommonContextArgs, resolveContextPath, type CommonContextArgs } from "./shared/cliArgs.js";
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   try {
     await runConfluenceImpact(args, logProgress);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -69,7 +69,7 @@ export async function runConfluenceImpact(args: ParsedArgs, logProgress = create
     throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
-  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  const llmClient = createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry });
   logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   const client = new AtlassianRestClient({
     jira: {

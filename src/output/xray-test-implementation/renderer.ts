@@ -26,19 +26,19 @@ export function renderXrayTestImplementationMarkdown(pack: XrayTestImplementatio
 
   lines.push("", "## Commands", "");
   if (pack.implementation.command) {
-    lines.push(`- Implementation: ${pack.implementation.command.command} (exit ${pack.implementation.command.exitCode}, ${pack.implementation.command.durationMs} ms)`);
+    lines.push(`- Implementation: ${formatCommand(pack.implementation.command)}`);
   } else {
     lines.push("- Implementation: not run");
   }
   if (pack.implementation.verification) {
-    lines.push(`- Verification: ${pack.implementation.verification.command} (exit ${pack.implementation.verification.exitCode}, ${pack.implementation.verification.durationMs} ms)`);
+    lines.push(`- Verification: ${formatCommand(pack.implementation.verification)}`);
   } else {
     lines.push("- Verification: not run");
   }
   if (pack.implementation.healingAttempts && pack.implementation.healingAttempts.length > 0) {
     for (const attempt of pack.implementation.healingAttempts) {
-      lines.push(`- Healing attempt ${attempt.attempt}: ${attempt.command.command} (exit ${attempt.command.exitCode}, ${attempt.command.durationMs} ms)`);
-      lines.push(`- Healing verification ${attempt.attempt}: ${attempt.verification.command} (exit ${attempt.verification.exitCode}, ${attempt.verification.durationMs} ms)`);
+      lines.push(`- Healing attempt ${attempt.attempt}: ${formatCommand(attempt.command)}`);
+      lines.push(`- Healing verification ${attempt.attempt}: ${formatCommand(attempt.verification)}`);
       lines.push(`  Prompt: ${attempt.promptPath}`);
     }
   }
@@ -101,4 +101,28 @@ function tableRows(rows: Array<[string, string | undefined]>): string {
 
 function escapeCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+}
+
+function formatCommand(command: XrayTestImplementationPack["implementation"]["command"]): string {
+  if (!command) {
+    return "not run";
+  }
+
+  const usage = command.usage ? `, ${formatUsage(command.usage)}` : "";
+  return `${command.command} (exit ${command.exitCode}, ${command.durationMs} ms${usage})`;
+}
+
+function formatUsage(usage: NonNullable<NonNullable<XrayTestImplementationPack["implementation"]["command"]>["usage"]>): string {
+  const parts = [
+    usage.provider,
+    usage.model,
+    usage.inputTokens !== undefined ? `prompt ${usage.inputTokens}` : undefined,
+    usage.cachedInputTokens !== undefined ? `cached ${usage.cachedInputTokens}` : undefined,
+    usage.cacheCreationInputTokens !== undefined ? `cache-write ${usage.cacheCreationInputTokens}` : undefined,
+    usage.outputTokens !== undefined ? `completion ${usage.outputTokens}` : undefined,
+    usage.reasoningOutputTokens !== undefined ? `reasoning ${usage.reasoningOutputTokens}` : undefined,
+    usage.totalCostUsd !== undefined ? `$${usage.totalCostUsd.toFixed(6)}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+
+  return parts.join(", ");
 }

@@ -36,9 +36,13 @@ export interface BuildXrayTestHealingPromptInput {
 }
 
 export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementationPromptInput): string {
-  const actionableTestCases = input.generation.plan.testCases.filter((testCase) => testCase.action === "create" || testCase.action === "update");
-  const readyTestCases = actionableTestCases.filter((testCase) => testCase.readiness === "ready");
-  const needsClarification = actionableTestCases.filter((testCase) => testCase.readiness === "needs-clarification");
+  const providedTestCases = input.generation.plan.testCases;
+  const automationTestCases = providedTestCases.filter((testCase) => testCase.action !== "deprecate");
+  const xrayMutationTestCases = providedTestCases.filter((testCase) => testCase.action === "create" || testCase.action === "update" || testCase.action === "deprecate");
+  const existingXrayKeepTestCases = providedTestCases.filter((testCase) => testCase.action === "keep");
+  const deprecatedTestCases = providedTestCases.filter((testCase) => testCase.action === "deprecate");
+  const readyTestCases = automationTestCases.filter((testCase) => testCase.readiness === "ready");
+  const needsClarification = automationTestCases.filter((testCase) => testCase.readiness === "needs-clarification");
 
   const lines: string[] = [];
   lines.push(`# Implement Generated Xray Test Cases for ${input.generation.ticket.key}`, "");
@@ -47,7 +51,10 @@ export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementa
   lines.push("- Treat this as a test implementation task, not a product feature implementation task.");
   lines.push("- Follow the repository guidance files exactly; they are the authority for test framework, locations, naming, data setup, fixtures, mocks, and validation commands.");
   lines.push("- Keep the change scoped to automated tests and directly necessary test support files.");
-  lines.push("- Prefer implementing ready create/update Xray test cases. Do not duplicate existing coverage for keep cases unless the repo guidance explicitly asks for traceability scaffolding.");
+  lines.push("- Implement every ready non-deprecated Xray case in this pack, including action \"keep\" cases, unless repository search proves equivalent automated coverage already exists.");
+  lines.push("- Treat action \"keep\" as Xray/Jira mutation guidance only: the Xray issue already exists and should stay unchanged. It is not evidence that an automated repository test exists.");
+  lines.push("- Do not automate action \"deprecate\" cases. They are Xray maintenance items for obsolete or mismatched manual tests; report them as deprecated/skipped for repository implementation.");
+  lines.push("- Before skipping any case as duplicate, search the target repository for the Xray key, manual title, and equivalent behavior; report the file or test that proves coverage.");
   lines.push("- For needs-clarification cases, add only defensible coverage when the expected behavior and setup are clear from the repository. Otherwise leave a clear note in your final response.");
   lines.push("- Do not hardcode secrets, tenant-specific credentials, production URLs, or brittle timing assumptions.");
   lines.push("- Preserve existing style and avoid broad refactors.");
@@ -66,16 +73,24 @@ export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementa
   lines.push("Coverage gaps:");
   pushList(lines, input.generation.plan.coverageGaps);
   lines.push("", "## Implementation Scope", "");
-  lines.push(`- Actionable create/update cases: ${actionableTestCases.length}`);
-  lines.push(`- Ready actionable cases: ${readyTestCases.length}`);
-  lines.push(`- Needs clarification actionable cases: ${needsClarification.length}`);
-  lines.push(`- Keep-only existing cases provided for context: ${input.generation.plan.testCases.length - actionableTestCases.length}`, "");
+  lines.push(`- Total provided Xray cases: ${providedTestCases.length}`);
+  lines.push(`- Ready implementation candidates: ${readyTestCases.length}`);
+  lines.push(`- Needs clarification cases: ${needsClarification.length}`);
+  lines.push(`- Xray create/update/deprecate issue actions: ${xrayMutationTestCases.length}`);
+  lines.push(`- Existing Xray keep actions requiring repository duplicate check: ${existingXrayKeepTestCases.length}`);
+  lines.push(`- Deprecated Xray cases excluded from automation: ${deprecatedTestCases.length}`, "");
   lines.push("## Generated Xray Test Cases", "");
-  for (const testCase of input.generation.plan.testCases) {
+  for (const testCase of providedTestCases) {
     lines.push(`### ${testCase.title}`, "");
     lines.push(`- Action: ${testCase.action}`);
     if (testCase.existingTestKey) {
       lines.push(`- Existing Xray key: ${testCase.existingTestKey}`);
+    }
+    if (testCase.action === "keep") {
+      lines.push("- Automation note: keep the existing Xray issue unchanged, but automate this case unless the repository already has equivalent automated coverage.");
+    }
+    if (testCase.action === "deprecate") {
+      lines.push("- Automation note: this case should not be automated because the Xray test is being marked deprecated.");
     }
     lines.push(`- Priority: ${testCase.priority}`);
     lines.push(`- Readiness: ${testCase.readiness}`);
@@ -85,8 +100,11 @@ export function buildXrayTestImplementationPrompt(input: BuildXrayTestImplementa
     lines.push("", "Preconditions:");
     pushList(lines, testCase.preconditions);
     lines.push("", "Manual Xray steps to automate:");
-    if (testCase.steps.length === 0) {
+    if (testCase.action === "deprecate") {
+      lines.push("_No automation steps expected for deprecated cases._");
+    } else if (testCase.steps.length === 0) {
       lines.push("_No manual steps were supplied._");
+      lines.push("_Do not treat missing manual steps as proof of existing automated coverage; use the objective, evidence, Xray key/title, and repository guidance to decide whether defensible automation can be implemented._");
     } else {
       testCase.steps.forEach((step, index) => {
         lines.push(`${index + 1}. ${step.action}`);
@@ -146,7 +164,9 @@ export function buildXrayTestHealingPrompt(input: BuildXrayTestHealingPromptInpu
 function pushImplementationContract(lines: string[]): void {
   lines.push("## Implementation Contract", "");
   lines.push("- Treat implementation as test automation only, not product feature work.");
-  lines.push("- Implement only the provided Xray cases; do not invent new cases or update Xray issues.");
+  lines.push("- Implement only the provided Xray cases; do not invent new cases. Xray/Jira issue updates are represented by the generation pack application phase, not by ad hoc repository edits.");
+  lines.push("- Treat the Xray action value as issue mutation guidance. \"keep\" means keep the existing Xray issue unchanged; \"deprecate\" means do not automate the obsolete case. Neither proves automated repository coverage.");
+  lines.push("- Before skipping a provided case as duplicate, search the repository for the Xray key, manual title, and equivalent behavior; skip only when matching automated coverage is already present and report the match.");
   lines.push("- Keep changes scoped to automated tests, direct test support, and directly required test documentation.");
   lines.push("- Use repository guidance and nearby tests as authority. If they conflict with Xray or Jira, follow repository guidance and report the conflict.");
   lines.push("- Preserve Xray traceability by keeping the Xray key or manual title visible in the automated test.");

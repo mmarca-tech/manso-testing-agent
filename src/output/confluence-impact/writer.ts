@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ConfluenceImpactPack } from "../../domain/confluenceImpact/schema.js";
+import { mirrorArtifactSetToMemory } from "../../memory/memoryCabin.js";
 import { renderConfluenceImpactMarkdown } from "./renderer.js";
 
 export interface WriteConfluenceImpactResult {
@@ -16,6 +17,14 @@ export async function writeConfluenceImpactPack(pack: ConfluenceImpactPack, dire
   await mkdir(directory, { recursive: true });
   await writeFile(jsonPath, `${JSON.stringify(pack, null, 2)}\n`, "utf8");
   await writeFile(markdownPath, renderConfluenceImpactMarkdown(pack), "utf8");
+  await mirrorArtifactSetToMemory({
+    workflow: "confluence-impact",
+    directory,
+    files: [
+      { path: jsonPath, kind: "json" },
+      { path: markdownPath, kind: "markdown" },
+    ],
+  });
 
   return { directory, jsonPath, markdownPath };
 }

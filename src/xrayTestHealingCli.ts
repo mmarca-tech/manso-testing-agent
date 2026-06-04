@@ -3,17 +3,17 @@ import "dotenv/config";
 import { access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import {
   gitCurrentBranch,
   gitStatusPorcelain,
   parseGitChangedFiles,
 } from "./integrations/git/localGit.js";
+import { flushTelemetry } from "./integrations/llm/telemetry/observability.js";
 import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
 import { asString, coerceStringOptionValues, parseNonNegativeInteger } from "./shared/cliArgs.js";
-import {
-  resolveDefaultImplementationAgentCommand,
-} from "./workflows/xray-test-implementation/agentCommand.js";
 import { createProgressLogger } from "./shared/cliLogger.js";
+import { resolveImplementationAgentRunners } from "./workflows/xray-test-implementation/agentRunner.js";
 import {
   buildCommandEnvironment,
   relativeGitPath,
@@ -33,7 +33,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runXrayTestHealing(args, logProgress);
+  try {
+    await runXrayTestHealing(args, logProgress);
+  } finally {
+    await flushTelemetry();
+  }
 }
 
 export async function runXrayTestHealing(args: ParsedArgs, logProgress = createProgressLogger("heal-xray-tests")): Promise<void> {
@@ -45,13 +49,8 @@ export async function runXrayTestHealing(args: ParsedArgs, logProgress = createP
     throw new CliError("Missing --verify-command or MANSO_TEST_VERIFY_COMMAND.");
   }
 
-  const healAgentCommand = args.healAgentCommand
-    ?? args.agentCommand
-    ?? nonEmpty(process.env.MANSO_TEST_IMPLEMENTATION_COMMAND)
-    ?? resolveDefaultImplementationAgentCommand({
-      ...(args.agentPath ? { agentPath: args.agentPath } : {}),
-      ...(args.agentArguments ? { agentArguments: args.agentArguments } : {}),
-    });
+  const config = await loadRuntimeConfig();
+  const agents = resolveImplementationAgentRunners(args, config);
 
   await assertFileExists(promptPath);
   const branch = args.branch ?? await gitCurrentBranch(repoRoot);
@@ -76,7 +75,8 @@ export async function runXrayTestHealing(args: ParsedArgs, logProgress = createP
     promptPath,
     outputDir: dirname(promptPath),
     verifyCommand,
-    healAgentCommand,
+    healAgentRunner: agents.healing,
+    ...(config.observability?.telemetry ? { telemetry: config.observability.telemetry } : {}),
     maxHealAttempts: args.healAttempts,
     initialVerification: verification,
     getChangedFiles: (healingPromptPaths) => collectChangedFiles(repoRoot, [promptPath, ...healingPromptPaths]),
@@ -193,11 +193,11 @@ Options:
   --out <dir>                    Output root directory. Defaults to ./out.
   --repo <dir>                   Repository root to edit. Defaults to the current working directory.
   --prompt <path>                Explicit implementation prompt path.
-  --agent-command <command>      Optional shell command for healing when --heal-agent-command is not supplied.
-                                 When omitted, LLM_PROVIDER selects the default agent.
+  --agent-command <command>      Optional explicit shell command for healing when --heal-agent-command is not supplied.
+                                 When omitted, LLM_PROVIDER selects an SDK runner.
   --heal-agent-command <command> Optional shell command for verification repair attempts.
-  --agent-path <path>            Executable override for the selected default provider.
-  --agent-arguments <args>       Argument override for the selected default provider.
+  --agent-path <path>            Executable override for the selected SDK provider.
+  --agent-arguments <args>       Argument override for explicit shell commands only.
   --heal-attempts <number>       Maximum repair attempts after verification failure. Defaults to 4.
   --verify-command <command>     Shell validation command to run before and after healing.
   --branch <name>                Working branch name for prompt context. Defaults to current branch.

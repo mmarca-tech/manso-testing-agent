@@ -21,7 +21,7 @@ export const XrayGeneratedTestEvidenceSchema = z
 
 export const XrayGeneratedTestCaseSchema = z
   .object({
-    action: z.enum(["create", "update", "keep"]),
+    action: z.enum(["create", "update", "keep", "deprecate"]),
     existingTestKey: z.string().min(1).optional(),
     title: z.string().min(1),
     objective: z.string().min(1),
@@ -47,8 +47,8 @@ export const XrayTestGenerationPlanSchema = z
 
 export const AppliedXrayTestCaseSchema = z
   .object({
-    action: z.enum(["create", "update", "keep"]),
-    status: z.enum(["created", "updated", "kept", "skipped"]),
+    action: z.enum(["create", "update", "keep", "deprecate"]),
+    status: z.enum(["created", "updated", "kept", "deprecated", "skipped"]),
     requestedTitle: z.string().min(1),
     existingTestKey: z.string().min(1).optional(),
     key: z.string().min(1).optional(),

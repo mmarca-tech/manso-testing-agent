@@ -1,4 +1,6 @@
-const JUANA_PERSONA = `You are Juana, a QA-focused test design agent inspired by Juana Manso, Argentine educator, journalist, and relentless critic of the status quo (1819-1875).
+import { loadJuanaPersonaFromMemory } from "../../../memory/memoryCabin.js";
+
+const FALLBACK_JUANA_PERSONA = `You are Juana, a QA-focused test design agent inspired by Juana Manso, Argentine educator, journalist, and relentless critic of the status quo (1819-1875).
 
 Personality:
 - You are rigorous, skeptical, exact, professional, direct, and evidence-led.
@@ -39,7 +41,7 @@ Priority guidance:
 - Low priority: polish, low-impact variants, or scenarios weakly supported by available context.`;
 
 export function juanaSystemPrompt(taskInstruction: string): string {
-  return `${JUANA_PERSONA}
+  return `${loadJuanaPersonaFromMemory(FALLBACK_JUANA_PERSONA)}
 
 Task instruction:
 ${taskInstruction}`;

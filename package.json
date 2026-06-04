@@ -1,6 +1,6 @@
 {
   "name": "manso-testing-agent",
-  "version": "2.0.0",
+  "version": "2.5.1",
   "description": "Bounded Jira, PR, Confluence, and Xray test workflow CLI and TypeScript library.",
   "license": "UNLICENSED",
   "type": "module",
@@ -12,6 +12,9 @@
       "import": "./dist/index.js"
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "registry": ""
   },
   "bin": {
     "review-pull-request": "./dist/reviewPullRequestCli.js",
@@ -39,7 +42,8 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",
     "pack:dry-run": "npm pack --dry-run",
-    "publish:npm": "npm publish --registry https://registry.npmjs.org/",
+    "publish:azure": "npm publish --userconfig .azure/.npmrc",
+    "publish-confluence-docs": "tsx scripts/publish-confluence-docs.ts",
     "test": "vitest run",
     "review-pull-request": "tsx src/reviewPullRequestCli.ts",
     "generate-release-notes": "tsx src/generateReleaseNotesCli.ts",
@@ -52,13 +56,20 @@
     "@arizeai/openinference-instrumentation-anthropic": "^0.1.10",
     "@arizeai/openinference-instrumentation-openai": "^4.1.0",
     "@arizeai/phoenix-otel": "^1.0.1",
-    "@openai/codex": "^0.128.0",
+    "@openai/codex": "^0.130.0",
+    "@openai/codex-sdk": "^0.130.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.205.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
+    "@opentelemetry/sdk-trace-node": "^2.7.1",
     "dotenv": "^17.4.2",
     "openai": "^6.37.0",
     "zod": "^4.4.2"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "marked": "^18.0.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.5"

@@ -8,7 +8,7 @@ import { AzureDevOpsClient } from "./integrations/azureDevOps/client.js";
 import { AzureDevOpsPullRequestDiffSource } from "./integrations/azureDevOps/pullRequestDiffSource.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
 import { LlmPullRequestSummarizer } from "./integrations/llm/adapters/pullRequestSummarizer.js";
-import { flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import { flushTelemetry } from "./integrations/llm/telemetry/observability.js";
 import { writePrChangesPack } from "./output/pr-changes/writer.js";
 import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
 import { parseCommonContextArgs, resolveContextPath, type CommonContextArgs } from "./shared/cliArgs.js";
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   try {
     await runPrChanges(args, logProgress);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -54,7 +54,7 @@ export async function runPrChanges(args: ParsedArgs, logProgress = createProgres
     throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
-  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  const llmClient = createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry });
   logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   const diffSource = new AzureDevOpsPullRequestDiffSource(new AzureDevOpsClient({ token: config.azureDevOps.token }));
   const summarizer = new LlmPullRequestSummarizer({ client: llmClient });

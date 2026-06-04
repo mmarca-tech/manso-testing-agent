@@ -15,7 +15,12 @@ import type { XrayTestReviewPack } from "./domain/xrayTestReview/schema.js";
 import { AtlassianRestClient } from "./integrations/atlassianRest/client.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
 import { LlmXrayTestPlanner } from "./integrations/llm/adapters/xrayTestPlanner.js";
-import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import {
+  createTracedWorkflow,
+  flushTelemetry,
+  jiraIssueSessionId,
+  setActiveSpanAttributes,
+} from "./integrations/llm/telemetry/observability.js";
 import { XrayCloudClient } from "./integrations/xray/client.js";
 import { XrayCloudTestSink } from "./integrations/xray/testSink.js";
 import { writeXrayTestGenerationPack } from "./output/xray-test-generation/writer.js";
@@ -43,9 +48,9 @@ export async function runGenerateXrayTests(
   const config = await loadRuntimeConfig({
     ...(args.configPath ? { configPath: args.configPath } : {}),
   });
-  const tracedWorkflow = createPhoenixTracedWorkflow(
+  const tracedWorkflow = createTracedWorkflow(
     (input: ParsedArgs) => runGenerateXrayTestsUntraced(input, logProgress, config),
-    config.observability?.phoenix,
+    config.observability?.telemetry,
     {
       name: "workflow.generate-xray-tests",
       attributes: {
@@ -53,6 +58,7 @@ export async function runGenerateXrayTests(
         ...(args.issue ? { "workflow.issue": args.issue } : {}),
         "workflow.dry_run": args.dryRun,
       },
+      sessionId: (input) => jiraIssueSessionId(input.issue),
       input: (input) => ({
         issue: input.issue,
         contextPath: input.contextPath,
@@ -94,7 +100,7 @@ async function runTracedContextExtraction(
   config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
   logProgress: (message: string) => void,
 ): Promise<{ contextPath: string }> {
-  const tracedContextExtractor = createPhoenixTracedWorkflow(
+  const tracedContextExtractor = createTracedWorkflow(
     (input: ParsedArgs) => runContextExtractor({
       ...(input.issue ? { issue: input.issue } : {}),
       outDir: input.outDir,
@@ -102,13 +108,14 @@ async function runTracedContextExtraction(
       ...(input.configPath ? { configPath: input.configPath } : {}),
       help: false,
     }, logProgress),
-    config.observability?.phoenix,
+    config.observability?.telemetry,
     {
       name: "task.context-extractor",
       attributes: {
         "workflow.name": "context-extractor",
         ...(args.issue ? { "workflow.issue": args.issue } : {}),
       },
+      sessionId: (input) => jiraIssueSessionId(input.issue),
       input: (input) => ({
         issue: input.issue,
         contextPath: input.contextPath,
@@ -131,6 +138,7 @@ export async function runXrayTestGenerationFromContext(
   const outputDir = dirname(contextPath);
   logProgress(`Loading context from ${contextPath}.`);
   const context = ContextPackSchema.parse(JSON.parse(await readFile(contextPath, "utf8")));
+  setActiveSpanAttributes({ "workflow.issue": context.ticket.key });
   logProgress(
     `Loaded context for ${context.ticket.key}: ${context.xrayTestCases.length} existing Xray test(s), ${context.comments.length} comment(s), ${context.confluencePages.length} linked Confluence page(s).`,
   );
@@ -171,7 +179,7 @@ export async function runXrayTestGenerationFromContext(
     throw new CliError("Missing Xray Cloud config. Set XRAY_CLIENT_ID and XRAY_CLIENT_SECRET.");
   }
 
-  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  const llmClient = createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry });
   logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   if (args.dryRun) {
     logProgress("Dry run mode is enabled; Jira and Xray writes will be skipped.");
@@ -410,5 +418,5 @@ Options:
 }
 
 if (isCliEntrypoint(import.meta.url)) {
-  main().finally(flushPhoenixTelemetry).catch(handleCliError);
+  main().finally(flushTelemetry).catch(handleCliError);
 }

@@ -34,7 +34,7 @@ export class LlmXrayTestReviewer implements XrayTestReviewer {
       const text = await this.client.generateText({
         operation: "reviewLinkedXrayTests",
         systemPrompt: juanaSystemPrompt(
-          "Review linked Xray test cases for a downstream test-generation workflow. Use only the provided JSON. Return strict JSON with overallSummary, coveredAcceptanceCriteria, gapsOrAmbiguities, and testCases. Identify what each test does, what acceptance criteria it covers, what risk it covers, and what cannot be confirmed from the available evidence.",
+          "Review linked Xray test cases for a downstream test-generation workflow. Use only the provided JSON. Return strict JSON with overallSummary, coveredAcceptanceCriteria, gapsOrAmbiguities, and testCases. Identify what each test does, what acceptance criteria it covers, what risk it covers, whether it should be kept, updated, deprecated, or left unclear, and what cannot be confirmed from the available evidence.",
         ),
         userPrompt: buildPrompt(input),
       });
@@ -92,7 +92,7 @@ Rules:
 - Map each test to acceptance criteria or requirement statements from the ticket when there is direct support.
 - If an acceptance criterion is inferred rather than explicit, say so in the wording.
 - Record gaps or ambiguities instead of inventing missing details.
-- updateRecommendation should be "keep" when the existing test appears adequate, "update" when it likely needs material changes for this ticket, and "unclear" when the available details are insufficient.
+- updateRecommendation should be "keep" when the existing test appears adequate, "update" when it likely needs material changes for this ticket, "deprecate" when it conflicts with current acceptance criteria or validates obsolete behavior, and "unclear" when the available details are insufficient.
 - Do not create new test cases in this step.
 - Keep facts, inferences, and assumptions distinguishable in summary, gapsOrAmbiguities, and rationale.
 - Use rationale to state the source evidence and any uncertainty.
@@ -114,7 +114,7 @@ Required JSON shape:
       "coveredBehaviors": ["behavior checked by this test"],
       "testDataOrPreconditions": ["visible setup, data, or precondition"],
       "gapsOrAmbiguities": ["missing detail or doubtful coverage"],
-      "updateRecommendation": "keep | update | unclear",
+      "updateRecommendation": "keep | update | deprecate | unclear",
       "rationale": "why this recommendation follows from the provided input"
     }
   ]

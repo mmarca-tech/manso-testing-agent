@@ -6,7 +6,12 @@ import { ContextPackSchema } from "./domain/contextPack/schema.js";
 import { runConfluenceImpact } from "./confluenceImpactCli.js";
 import { runExtractTicket } from "./extractTicketCli.js";
 import { runLinkedXrayTestExtraction } from "./linkedXrayTestExtractionCli.js";
-import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import {
+  createTracedWorkflow,
+  flushTelemetry,
+  jiraIssueSessionId,
+  setActiveSpanAttributes,
+} from "./integrations/llm/telemetry/observability.js";
 import { runPrChanges } from "./prChangesCli.js";
 import { CliError, rejectInternalCliEntrypoint } from "./shared/cli.js";
 import { parseCommonContextArgs, type CommonContextArgs } from "./shared/cliArgs.js";
@@ -27,15 +32,16 @@ async function main(): Promise<void> {
     const config = await loadRuntimeConfig({
       ...(args.configPath ? { configPath: args.configPath } : {}),
     });
-    const tracedRunContextExtractor = createPhoenixTracedWorkflow(
+    const tracedRunContextExtractor = createTracedWorkflow(
       (input: ParsedArgs) => runContextExtractor(input, logProgress),
-      config.observability?.phoenix,
+      config.observability?.telemetry,
       {
         name: "task.context-extractor",
         attributes: {
           "workflow.name": "context-extractor",
           ...(args.issue ? { "workflow.issue": args.issue } : {}),
         },
+        sessionId: (input) => jiraIssueSessionId(input.issue),
         input: (input) => ({
           issue: input.issue,
           contextPath: input.contextPath,
@@ -47,7 +53,7 @@ async function main(): Promise<void> {
     );
     await tracedRunContextExtractor(args);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -68,6 +74,7 @@ export async function runContextExtractor(args: ParsedArgs, logProgress = create
   }
 
   const context = ContextPackSchema.parse(JSON.parse(await readFile(contextPath, "utf8")));
+  setActiveSpanAttributes({ "workflow.issue": context.ticket.key });
   logProgress(
     `Context ready for ${context.ticket.key}: ${context.confluencePages.length} Confluence page(s), ${context.xrayTestCases.length} Xray test(s), ${context.development.pullRequests.length} pull request(s).`,
   );

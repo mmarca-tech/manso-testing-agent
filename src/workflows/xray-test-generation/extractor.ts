@@ -115,7 +115,10 @@ function dryRunApplication(ticketKey: string, ticketTitle: string, plan: XrayTes
     testSet: {
       status: "dry-run",
       title: `${ticketKey} Generated Test Set - ${ticketTitle}`,
-      includedTestKeys: plan.testCases.map((testCase) => testCase.existingTestKey).filter((key): key is string => Boolean(key)),
+      includedTestKeys: plan.testCases
+        .filter((testCase) => testCase.action !== "deprecate")
+        .map((testCase) => testCase.existingTestKey)
+        .filter((key): key is string => Boolean(key)),
       includedTestIssueIds: [],
       warnings: ["Dry run enabled; test set was not created."],
     },

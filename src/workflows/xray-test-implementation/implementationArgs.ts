@@ -2,9 +2,6 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CliError } from "../../shared/cli.js";
 import { asBoolean, asString, asStringArray, coerceStringOptionValues, parseNonNegativeInteger } from "../../shared/cliArgs.js";
-import {
-  resolveDefaultImplementationAgentCommand,
-} from "./agentCommand.js";
 
 export interface ParsedArgs {
   issue?: string;
@@ -160,11 +157,11 @@ export function resolvePromptPath(args: ParsedArgs, outputDir: string): string {
 
 export function resolveImplementationCommands(args: ParsedArgs): ResolvedImplementationCommands {
   const agentCommand = args.agentCommand
-    ?? nonEmpty(process.env.MANSO_TEST_IMPLEMENTATION_COMMAND)
-    ?? resolveDefaultImplementationAgentCommand({
-      ...(args.agentPath ? { agentPath: args.agentPath } : {}),
-      ...(args.agentArguments ? { agentArguments: args.agentArguments } : {}),
-    });
+    ?? nonEmpty(process.env.MANSO_TEST_IMPLEMENTATION_COMMAND);
+
+  if (!agentCommand) {
+    throw new CliError("No shell implementation command is configured. Default implementation uses SDK runners; use resolveImplementationAgentRunners instead.");
+  }
 
   return {
     agentCommand,
@@ -202,15 +199,14 @@ Options:
                                    docs/testing/ai-test-generation.md,
                                    .manso/testgen.md, and .manso/repo-conventions.json.
   --prompt <path>                  Prompt output path. Defaults next to xray-test-generation.json.
-  --agent-command <command>        Optional shell command that implements tests. When omitted,
-                                   LLM_PROVIDER selects the default agent: openai uses bundled Codex,
-                                   anthropic uses Claude Code. Prompt is sent on stdin and
-                                   MANSO_TEST_IMPLEMENTATION_PROMPT points to the prompt file.
+  --agent-command <command>        Optional explicit shell command that implements tests. When omitted,
+                                   LLM_PROVIDER selects an SDK runner: openai uses @openai/codex-sdk,
+                                   anthropic uses @anthropic-ai/claude-agent-sdk.
   --heal-agent-command <command>   Optional shell command for verification repair attempts.
-                                   Defaults to --agent-command.
-  --agent-path <path>              Executable override for the selected default provider.
+                                   Defaults to the selected implementation runner.
+  --agent-path <path>              Executable override for the selected SDK provider.
                                    Env: MANSO_TEST_IMPLEMENTATION_AGENT_PATH.
-  --agent-arguments <args>         Argument override for the selected default provider.
+  --agent-arguments <args>         Argument override for explicit shell commands only.
                                    Env: MANSO_TEST_IMPLEMENTATION_AGENT_ARGUMENTS.
   --heal-attempts <number>         Maximum repair attempts after verification failure. Defaults to 4.
   --no-heal                        Disable verification repair attempts.

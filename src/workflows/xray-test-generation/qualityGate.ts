@@ -17,7 +17,7 @@ export function assertXrayPlanReadyForApplication(plan: XrayTestGenerationPlan):
 }
 
 function validateRequiredFields(label: string, testCase: XrayGeneratedTestCase, failures: string[]): void {
-  if ((testCase.action === "keep" || testCase.action === "update") && !testCase.existingTestKey) {
+  if ((testCase.action === "keep" || testCase.action === "update" || testCase.action === "deprecate") && !testCase.existingTestKey) {
     failures.push(`${label}: ${testCase.action} action requires existingTestKey.`);
   }
 
@@ -53,7 +53,7 @@ function collectDuplicateStepFailures(testCases: XrayGeneratedTestCase[], failur
   const seen = new Map<string, string>();
 
   for (const testCase of testCases) {
-    if (testCase.action === "keep" || testCase.steps.length === 0) {
+    if (testCase.action === "keep" || testCase.action === "deprecate" || testCase.steps.length === 0) {
       continue;
     }
 

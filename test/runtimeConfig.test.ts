@@ -30,12 +30,23 @@ const originalAnthropicModel = process.env.ANTHROPIC_MODEL;
 const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
 const originalAnthropicApiVersion = process.env.ANTHROPIC_API_VERSION;
 const originalAnthropicMaxOutputTokens = process.env.ANTHROPIC_MAX_OUTPUT_TOKENS;
-const originalPhoenixEnabled = process.env.PHOENIX_ENABLED;
-const originalPhoenixProjectName = process.env.PHOENIX_PROJECT_NAME;
-const originalPhoenixCollectorEndpoint = process.env.PHOENIX_COLLECTOR_ENDPOINT;
-const originalPhoenixUrl = process.env.PHOENIX_URL;
-const originalPhoenixApiKey = process.env.PHOENIX_API_KEY;
-const originalPhoenixBatch = process.env.PHOENIX_BATCH;
+const originalOtelProvider = process.env.OTEL_PROVIDER;
+const originalOtelEnabled = process.env.OTEL_ENABLED;
+const originalOtelProjectName = process.env.OTEL_PROJECT_NAME;
+const originalOtelEndpoint = process.env.OTEL_ENDPOINT;
+const originalOtelApiKey = process.env.OTEL_API_KEY;
+const originalOtelPublicKey = process.env.OTEL_PUBLIC_KEY;
+const originalOtelSecretKey = process.env.OTEL_SECRET_KEY;
+const originalOtelSessionId = process.env.OTEL_SESSION_ID;
+const originalOtelUserId = process.env.OTEL_USER_ID;
+const originalOtelBatch = process.env.OTEL_BATCH;
+const originalOtelExporterOtlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const originalOtelExporterOtlpTracesEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+const originalBuildRequestedForEmail = process.env.BUILD_REQUESTEDFOREMAIL;
+const originalReleaseRequestedForEmail = process.env.RELEASE_REQUESTEDFOREMAIL;
+const originalSystemPullRequestSourceCommitterEmail = process.env.SYSTEM_PULLREQUEST_SOURCECOMMITTEREMAIL;
+const originalBuildRequestedForId = process.env.BUILD_REQUESTEDFORID;
+const originalBuildRequestedFor = process.env.BUILD_REQUESTEDFOR;
 const originalXrayBaseUrl = process.env.XRAY_BASE_URL;
 const originalXrayClientId = process.env.XRAY_CLIENT_ID;
 const originalXrayClientSecret = process.env.XRAY_CLIENT_SECRET;
@@ -70,12 +81,23 @@ describe("loadRuntimeConfig", () => {
     restoreEnv("ANTHROPIC_BASE_URL", originalAnthropicBaseUrl);
     restoreEnv("ANTHROPIC_API_VERSION", originalAnthropicApiVersion);
     restoreEnv("ANTHROPIC_MAX_OUTPUT_TOKENS", originalAnthropicMaxOutputTokens);
-    restoreEnv("PHOENIX_ENABLED", originalPhoenixEnabled);
-    restoreEnv("PHOENIX_PROJECT_NAME", originalPhoenixProjectName);
-    restoreEnv("PHOENIX_COLLECTOR_ENDPOINT", originalPhoenixCollectorEndpoint);
-    restoreEnv("PHOENIX_URL", originalPhoenixUrl);
-    restoreEnv("PHOENIX_API_KEY", originalPhoenixApiKey);
-    restoreEnv("PHOENIX_BATCH", originalPhoenixBatch);
+    restoreEnv("OTEL_PROVIDER", originalOtelProvider);
+    restoreEnv("OTEL_ENABLED", originalOtelEnabled);
+    restoreEnv("OTEL_PROJECT_NAME", originalOtelProjectName);
+    restoreEnv("OTEL_ENDPOINT", originalOtelEndpoint);
+    restoreEnv("OTEL_API_KEY", originalOtelApiKey);
+    restoreEnv("OTEL_PUBLIC_KEY", originalOtelPublicKey);
+    restoreEnv("OTEL_SECRET_KEY", originalOtelSecretKey);
+    restoreEnv("OTEL_SESSION_ID", originalOtelSessionId);
+    restoreEnv("OTEL_USER_ID", originalOtelUserId);
+    restoreEnv("OTEL_BATCH", originalOtelBatch);
+    restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelExporterOtlpEndpoint);
+    restoreEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", originalOtelExporterOtlpTracesEndpoint);
+    restoreEnv("BUILD_REQUESTEDFOREMAIL", originalBuildRequestedForEmail);
+    restoreEnv("RELEASE_REQUESTEDFOREMAIL", originalReleaseRequestedForEmail);
+    restoreEnv("SYSTEM_PULLREQUEST_SOURCECOMMITTEREMAIL", originalSystemPullRequestSourceCommitterEmail);
+    restoreEnv("BUILD_REQUESTEDFORID", originalBuildRequestedForId);
+    restoreEnv("BUILD_REQUESTEDFOR", originalBuildRequestedFor);
     restoreEnv("XRAY_BASE_URL", originalXrayBaseUrl);
     restoreEnv("XRAY_CLIENT_ID", originalXrayClientId);
     restoreEnv("XRAY_CLIENT_SECRET", originalXrayClientSecret);
@@ -260,28 +282,38 @@ describe("loadRuntimeConfig", () => {
     await expect(loadRuntimeConfig()).rejects.toThrow("LLM provider must be one of: openai, anthropic");
   });
 
-  it("loads Phoenix telemetry settings when enabled", async () => {
-    process.env.PHOENIX_ENABLED = "true";
-    process.env.PHOENIX_PROJECT_NAME = "agent-costs";
-    process.env.PHOENIX_COLLECTOR_ENDPOINT = "https://phoenix.example/v1/traces";
-    process.env.PHOENIX_API_KEY = "phoenix-token";
-    process.env.PHOENIX_BATCH = "false";
+  it("loads Phoenix telemetry settings from merged OpenTelemetry environment variables", async () => {
+    clearAzureDevOpsUserEnv();
+    process.env.OTEL_PROVIDER = "phoenix";
+    process.env.OTEL_ENABLED = "true";
+    process.env.OTEL_PROJECT_NAME = "agent-costs";
+    process.env.OTEL_ENDPOINT = "https://phoenix.example/v1/traces";
+    process.env.OTEL_API_KEY = "phoenix-token";
+    process.env.OTEL_SESSION_ID = "jira:DEMO-123";
+    process.env.OTEL_USER_ID = "local-user@example.com";
+    process.env.OTEL_BATCH = "false";
 
     const config = await loadRuntimeConfig();
 
-    expect(config.observability?.phoenix).toEqual({
+    expect(config.observability?.provider).toBe("phoenix");
+    expect(config.observability?.telemetry).toEqual({
+      provider: "phoenix",
       enabled: true,
       projectName: "agent-costs",
       url: "https://phoenix.example/v1/traces",
       apiKey: "phoenix-token",
+      sessionId: "jira:DEMO-123",
+      userId: "local-user@example.com",
       batch: false,
     });
   });
 
   it("prefers config file Phoenix telemetry settings over environment variables", async () => {
-    process.env.PHOENIX_ENABLED = "true";
-    process.env.PHOENIX_PROJECT_NAME = "env-project";
-    process.env.PHOENIX_URL = "https://env-phoenix.example";
+    clearAzureDevOpsUserEnv();
+    process.env.OTEL_PROVIDER = "phoenix";
+    process.env.OTEL_ENABLED = "true";
+    process.env.OTEL_PROJECT_NAME = "env-project";
+    process.env.OTEL_ENDPOINT = "https://env-phoenix.example";
     const tempDir = await mkdtemp(join(tmpdir(), "manso-runtime-config-"));
     const configPath = join(tempDir, "config.json");
 
@@ -290,24 +322,101 @@ describe("loadRuntimeConfig", () => {
         configPath,
         JSON.stringify({
           observability: {
-            phoenix: {
-              enabled: true,
-              projectName: "file-project",
-              url: "https://file-phoenix.example",
-              apiKey: "file-token",
-              batch: false,
-            },
+            provider: "phoenix",
+            enabled: true,
+            projectName: "file-project",
+            url: "https://file-phoenix.example",
+            apiKey: "file-token",
+            sessionId: "file-session",
+            userId: "file-user",
+            batch: false,
           },
         }),
       );
 
       const config = await loadRuntimeConfig({ configPath });
 
-      expect(config.observability?.phoenix).toEqual({
+      expect(config.observability?.telemetry).toEqual({
+        provider: "phoenix",
         enabled: true,
         projectName: "file-project",
         url: "https://file-phoenix.example",
         apiKey: "file-token",
+        sessionId: "file-session",
+        userId: "file-user",
+        batch: false,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads Langfuse telemetry settings from merged OpenTelemetry environment variables", async () => {
+    process.env.OTEL_PROVIDER = "langfuse";
+    process.env.OTEL_ENABLED = "true";
+    process.env.OTEL_PROJECT_NAME = "agent-costs";
+    process.env.OTEL_ENDPOINT = "https://cloud.langfuse.com";
+    process.env.OTEL_PUBLIC_KEY = "pk-lf-test";
+    process.env.OTEL_SECRET_KEY = "sk-lf-test";
+    process.env.OTEL_SESSION_ID = "ado-pr:example-org/sample-project/repo/123";
+    process.env.BUILD_REQUESTEDFOREMAIL = "ado.requester@example.com";
+    process.env.OTEL_USER_ID = "fallback-user@example.com";
+    process.env.OTEL_BATCH = "false";
+
+    const config = await loadRuntimeConfig();
+
+    expect(config.observability?.provider).toBe("langfuse");
+    expect(config.observability?.telemetry).toEqual({
+      provider: "langfuse",
+      enabled: true,
+      projectName: "agent-costs",
+      url: "https://cloud.langfuse.com",
+      publicKey: "pk-lf-test",
+      secretKey: "sk-lf-test",
+      sessionId: "ado-pr:example-org/sample-project/repo/123",
+      userId: "ado.requester@example.com",
+      batch: false,
+    });
+  });
+
+  it("prefers config file Langfuse telemetry settings over environment variables", async () => {
+    clearAzureDevOpsUserEnv();
+    process.env.OTEL_PROVIDER = "phoenix";
+    process.env.OTEL_PUBLIC_KEY = "env-public";
+    process.env.OTEL_SECRET_KEY = "env-secret";
+    const tempDir = await mkdtemp(join(tmpdir(), "manso-runtime-config-"));
+    const configPath = join(tempDir, "config.json");
+
+    try {
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          observability: {
+            provider: "langfuse",
+            enabled: true,
+            projectName: "file-project",
+            url: "https://us.cloud.langfuse.com",
+            publicKey: "file-public",
+            secretKey: "file-secret",
+            sessionId: "langfuse-file-session",
+            userId: "file-user",
+            batch: false,
+          },
+        }),
+      );
+
+      const config = await loadRuntimeConfig({ configPath });
+
+      expect(config.observability?.provider).toBe("langfuse");
+      expect(config.observability?.telemetry).toEqual({
+        provider: "langfuse",
+        enabled: true,
+        projectName: "file-project",
+        url: "https://us.cloud.langfuse.com",
+        publicKey: "file-public",
+        secretKey: "file-secret",
+        sessionId: "langfuse-file-session",
+        userId: "file-user",
         batch: false,
       });
     } finally {
@@ -340,4 +449,12 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
+}
+
+function clearAzureDevOpsUserEnv(): void {
+  delete process.env.BUILD_REQUESTEDFOREMAIL;
+  delete process.env.RELEASE_REQUESTEDFOREMAIL;
+  delete process.env.SYSTEM_PULLREQUEST_SOURCECOMMITTEREMAIL;
+  delete process.env.BUILD_REQUESTEDFORID;
+  delete process.env.BUILD_REQUESTEDFOR;
 }

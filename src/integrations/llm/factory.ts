@@ -1,32 +1,32 @@
 import { AnthropicMessagesLlmClient } from "./clients/anthropicMessagesClient.js";
 import { OpenAiResponsesLlmClient } from "./clients/openAiResponsesClient.js";
-import { createPhoenixInstrumentedLlmTextClient, initializePhoenixTelemetry } from "./telemetry/phoenix.js";
-import type { LlmRuntimeConfig, LlmTextClient, PhoenixTelemetryConfig } from "./types.js";
+import { createInstrumentedLlmTextClient, initializeTelemetry } from "./telemetry/observability.js";
+import type { LlmRuntimeConfig, LlmTextClient, ObservabilityTelemetryConfig } from "./types.js";
 
 export interface CreateLlmTextClientOptions {
   fetchFn?: typeof fetch;
-  phoenixTelemetry?: PhoenixTelemetryConfig | undefined;
+  telemetry?: ObservabilityTelemetryConfig | undefined;
 }
 
 export function createLlmTextClient(config: LlmRuntimeConfig, options: CreateLlmTextClientOptions = {}): LlmTextClient {
-  initializePhoenixTelemetry(options.phoenixTelemetry);
+  initializeTelemetry(options.telemetry);
 
   if (config.provider === "openai") {
-    return createPhoenixInstrumentedLlmTextClient(new OpenAiResponsesLlmClient({
+    return createInstrumentedLlmTextClient(new OpenAiResponsesLlmClient({
       apiKey: config.apiKey,
       model: config.model,
       ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
       ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
       ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
-    }), options.phoenixTelemetry);
+    }), options.telemetry);
   }
 
-  return createPhoenixInstrumentedLlmTextClient(new AnthropicMessagesLlmClient({
+  return createInstrumentedLlmTextClient(new AnthropicMessagesLlmClient({
     apiKey: config.apiKey,
     model: config.model,
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
     ...(config.apiVersion ? { apiVersion: config.apiVersion } : {}),
     ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
     ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
-  }), options.phoenixTelemetry);
+  }), options.telemetry);
 }

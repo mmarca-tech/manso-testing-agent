@@ -9,7 +9,12 @@ import { AzureDevOpsClient } from "./integrations/azureDevOps/client.js";
 import { AzureDevOpsPullRequestDiffSource } from "./integrations/azureDevOps/pullRequestDiffSource.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
 import { LlmPullRequestCodeReviewer } from "./integrations/llm/adapters/pullRequestCodeReviewer.js";
-import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import {
+  azurePullRequestSessionId,
+  createTracedWorkflow,
+  flushTelemetry,
+  setActiveSpanAttributes,
+} from "./integrations/llm/telemetry/observability.js";
 import {
   AzureDevOpsPullRequestCommentSink,
   AzureDevOpsPullRequestReviewSource,
@@ -39,9 +44,9 @@ async function main(): Promise<void> {
     const config = await loadRuntimeConfig({
       ...(args.configPath ? { configPath: args.configPath } : {}),
     });
-    const tracedReview = createPhoenixTracedWorkflow(
+    const tracedReview = createTracedWorkflow(
       (input: ParsedArgs) => runPullRequestCodeReview(input, logProgress),
-      config.observability?.phoenix,
+      config.observability?.telemetry,
       {
         name: "workflow.review-pull-request",
         attributes: {
@@ -49,6 +54,7 @@ async function main(): Promise<void> {
           ...(args.ticketKey ? { "workflow.issue": args.ticketKey } : {}),
           "workflow.no_comment": args.noComment,
         },
+        sessionId: (input) => azurePullRequestSessionId(input),
         input: (input) => ({
           organization: input.organization,
           project: input.project,
@@ -66,7 +72,7 @@ async function main(): Promise<void> {
     );
     await tracedReview(args);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -111,6 +117,7 @@ export async function runPullRequestCodeReview(
   }
 
   logProgress(`Detected Jira ticket ${detectedTicketKey}.`);
+  setActiveSpanAttributes({ "workflow.issue": detectedTicketKey });
   const atlassianClient = new AtlassianRestClient({
     jira: {
       baseUrl: config.jiraRest.jiraUrl,
@@ -150,7 +157,7 @@ export async function runPullRequestCodeReview(
     const diffSource = new AzureDevOpsPullRequestDiffSource(azureClient, diffOptions);
     const diff = await diffSource.getPullRequestDiff(pullRequestToContextPullRequest(pullRequest));
 
-    const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+    const llmClient = createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry });
     logProgress(`Reviewing pull request with ${llmClient.provider} model ${llmClient.model}.`);
     const reviewer = new LlmPullRequestCodeReviewer({ client: llmClient });
     const warnings: Warning[] = [...ticket.warnings, ...pullRequestSource.getWarnings(), ...diffSource.getWarnings()];
@@ -277,7 +284,7 @@ function printHelp(): void {
 
 Usage:
   review-pull-request
-  review-pull-request --organization my-org --project my-project --repository my-repo --pull-request-id 123
+  review-pull-request --organization example-org --project sample-project --repository repo --pull-request-id 123
 
 Options:
   --organization <name>          Azure DevOps organization. Defaults to pipeline env.

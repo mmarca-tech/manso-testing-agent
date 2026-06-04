@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { LlmProvider, LlmRuntimeConfig, PhoenixTelemetryConfig } from "../integrations/llm/types.js";
+import type {
+  LangfuseTelemetryConfig,
+  LlmProvider,
+  LlmRuntimeConfig,
+  ObservabilityTelemetryConfig,
+  OpenTelemetryProvider,
+  PhoenixTelemetryConfig,
+} from "../integrations/llm/types.js";
 
 const ConfigSchema = z
   .object({
@@ -44,16 +51,16 @@ const ConfigSchema = z
       .optional(),
     observability: z
       .object({
-        phoenix: z
-          .object({
-            enabled: z.boolean().optional(),
-            projectName: z.string().min(1).optional(),
-            url: z.string().url().optional(),
-            apiKey: z.string().min(1).optional(),
-            batch: z.boolean().optional(),
-          })
-          .strict()
-          .optional(),
+        provider: z.enum(["phoenix", "langfuse"]).optional(),
+        enabled: z.boolean().optional(),
+        projectName: z.string().min(1).optional(),
+        url: z.string().url().optional(),
+        apiKey: z.string().min(1).optional(),
+        publicKey: z.string().min(1).optional(),
+        secretKey: z.string().min(1).optional(),
+        sessionId: z.string().min(1).optional(),
+        userId: z.string().min(1).optional(),
+        batch: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -90,7 +97,8 @@ export interface RuntimeConfig {
   };
   llm?: LlmRuntimeConfig;
   observability?: {
-    phoenix?: PhoenixTelemetryConfig;
+    provider: OpenTelemetryProvider;
+    telemetry: ObservabilityTelemetryConfig;
   };
   openAi?: {
     apiKey: string;
@@ -181,30 +189,99 @@ function loadAzureDevOpsConfig(configured: NonNullable<z.infer<typeof ConfigSche
 function loadObservabilityConfig(
   configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>,
 ): RuntimeConfig["observability"] | undefined {
-  const phoenix = loadPhoenixTelemetryConfig(configured.phoenix ?? {});
-  return phoenix ? { phoenix } : undefined;
-}
-
-function loadPhoenixTelemetryConfig(
-  configured: NonNullable<NonNullable<z.infer<typeof ConfigSchema>["observability"]>["phoenix"]>,
-): PhoenixTelemetryConfig | undefined {
-  const enabled = configured.enabled ?? parseBoolean(nonEmpty(process.env.PHOENIX_ENABLED), false);
+  const enabled = configured.enabled ?? parseBoolean(nonEmpty(process.env.OTEL_ENABLED), false);
   if (!enabled) {
     return undefined;
   }
 
-  const projectName = configured.projectName ?? nonEmpty(process.env.PHOENIX_PROJECT_NAME) ?? "manso-testing-agent";
-  const url = configured.url ?? nonEmpty(process.env.PHOENIX_COLLECTOR_ENDPOINT) ?? nonEmpty(process.env.PHOENIX_URL);
-  const apiKey = configured.apiKey ?? nonEmpty(process.env.PHOENIX_API_KEY);
-  const batch = configured.batch ?? parseBoolean(nonEmpty(process.env.PHOENIX_BATCH), true);
+  const selectedProvider = parseOpenTelemetryProvider(configured.provider ?? nonEmpty(process.env.OTEL_PROVIDER) ?? "phoenix");
+  if (selectedProvider === "phoenix") {
+    const phoenix = loadPhoenixTelemetryConfig(configured, enabled);
+    return {
+      provider: "phoenix",
+      telemetry: { ...phoenix, provider: "phoenix" },
+    };
+  }
+
+  const langfuse = loadLangfuseTelemetryConfig(configured, enabled);
+  return {
+    provider: "langfuse",
+    telemetry: { ...langfuse, provider: "langfuse" },
+  };
+}
+
+function loadPhoenixTelemetryConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>,
+  enabled: boolean,
+): PhoenixTelemetryConfig {
+  const projectName =
+    configured.projectName ??
+    nonEmpty(process.env.OTEL_PROJECT_NAME) ??
+    "manso-testing-agent";
+  const url =
+    configured.url ??
+    nonEmpty(process.env.OTEL_ENDPOINT) ??
+    nonEmpty(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) ??
+    nonEmpty(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
+  const apiKey = configured.apiKey ?? nonEmpty(process.env.OTEL_API_KEY);
+  const sessionId = configured.sessionId ?? nonEmpty(process.env.OTEL_SESSION_ID);
+  const userId = resolveObservabilityUserId(configured);
+  const batch = configured.batch ?? parseBoolean(nonEmpty(process.env.OTEL_BATCH), true);
 
   return {
     enabled,
     projectName,
     ...(url ? { url } : {}),
     ...(apiKey ? { apiKey } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(userId ? { userId } : {}),
     batch,
   };
+}
+
+function loadLangfuseTelemetryConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>,
+  enabled: boolean,
+): LangfuseTelemetryConfig {
+  const publicKey = configured.publicKey ?? nonEmpty(process.env.OTEL_PUBLIC_KEY);
+  const secretKey = configured.secretKey ?? nonEmpty(process.env.OTEL_SECRET_KEY);
+  if (!publicKey || !secretKey) {
+    throw new Error("Langfuse telemetry requires OTEL_PUBLIC_KEY and OTEL_SECRET_KEY, or observability publicKey and secretKey.");
+  }
+
+  const projectName =
+    configured.projectName ??
+    nonEmpty(process.env.OTEL_PROJECT_NAME) ??
+    "manso-testing-agent";
+  const url =
+    configured.url ??
+    nonEmpty(process.env.OTEL_ENDPOINT) ??
+    nonEmpty(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) ??
+    nonEmpty(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
+  const sessionId = configured.sessionId ?? nonEmpty(process.env.OTEL_SESSION_ID);
+  const userId = resolveObservabilityUserId(configured);
+  const batch = configured.batch ?? parseBoolean(nonEmpty(process.env.OTEL_BATCH), true);
+
+  return {
+    enabled,
+    projectName,
+    ...(url ? { url } : {}),
+    publicKey,
+    secretKey,
+    ...(sessionId ? { sessionId } : {}),
+    ...(userId ? { userId } : {}),
+    batch,
+  };
+}
+
+function resolveObservabilityUserId(configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>): string | undefined {
+  return nonEmpty(process.env.BUILD_REQUESTEDFOREMAIL) ??
+    nonEmpty(process.env.RELEASE_REQUESTEDFOREMAIL) ??
+    nonEmpty(process.env.SYSTEM_PULLREQUEST_SOURCECOMMITTEREMAIL) ??
+    nonEmpty(process.env.BUILD_REQUESTEDFORID) ??
+    nonEmpty(process.env.BUILD_REQUESTEDFOR) ??
+    configured.userId ??
+    nonEmpty(process.env.OTEL_USER_ID);
 }
 
 function loadOpenAiConfig(
@@ -293,6 +370,14 @@ function parseLlmProvider(value: string): LlmProvider {
   }
 
   throw new Error(`LLM provider must be one of: openai, anthropic. Actual value: ${value}`);
+}
+
+function parseOpenTelemetryProvider(value: string): OpenTelemetryProvider {
+  if (value === "phoenix" || value === "langfuse") {
+    return value;
+  }
+
+  throw new Error(`OpenTelemetry provider must be one of: phoenix, langfuse. Actual value: ${value}`);
 }
 
 function parseOptionalPositiveInteger(value: string | undefined, provider: LlmProvider): number | undefined {

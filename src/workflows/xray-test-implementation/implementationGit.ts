@@ -121,6 +121,7 @@ export function buildCommandEnvironment(
   targetBranch: string,
   healingPromptPath?: string,
 ): NodeJS.ProcessEnv {
+  const inheritedSessionId = process.env.OTEL_SESSION_ID?.trim();
   return {
     ...process.env,
     MANSO_TEST_IMPLEMENTATION_PROMPT: promptPath,
@@ -128,6 +129,7 @@ export function buildCommandEnvironment(
     MANSO_TEST_ISSUE: issueKey,
     MANSO_TEST_BRANCH: branch,
     MANSO_TEST_TARGET_BRANCH: targetBranch,
+    OTEL_SESSION_ID: inheritedSessionId || `jira:${issueKey.toUpperCase()}`,
   };
 }
 

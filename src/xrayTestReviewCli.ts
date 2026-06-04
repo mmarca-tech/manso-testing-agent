@@ -7,7 +7,7 @@ import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import { ContextPackSchema } from "./domain/contextPack/schema.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
 import { LlmXrayTestReviewer } from "./integrations/llm/adapters/xrayTestReviewer.js";
-import { flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import { flushTelemetry } from "./integrations/llm/telemetry/observability.js";
 import { XrayCloudClient } from "./integrations/xray/client.js";
 import { XrayCloudTestDefinitionSource } from "./integrations/xray/testDefinitionSource.js";
 import { writeXrayTestReviewPack } from "./output/xray-test-review/writer.js";
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   try {
     await runXrayTestReview(args, logProgress);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -77,7 +77,7 @@ export async function runXrayTestReview(args: ParsedArgs, logProgress = createPr
     : undefined;
   const llmClient =
     context.xrayTestCases.length > 0 && config.llm
-      ? createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix })
+      ? createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry })
       : undefined;
   const reviewer = llmClient
     ? new LlmXrayTestReviewer({

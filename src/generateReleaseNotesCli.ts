@@ -8,7 +8,7 @@ import type { JiraReleaseNotesFieldFormat } from "./integrations/atlassianRest/r
 import { AtlassianRestSource } from "./integrations/atlassianRest/source.js";
 import { createLlmTextClient } from "./integrations/llm/factory.js";
 import { LlmReleaseNotesSummarizer } from "./integrations/llm/adapters/releaseNotesSummarizer.js";
-import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import { createTracedWorkflow, flushTelemetry, jiraIssueSessionId } from "./integrations/llm/telemetry/observability.js";
 import { renderReleaseNotesMarkdown } from "./output/release-notes/renderer.js";
 import { writeReleaseNotesPack } from "./output/release-notes/writer.js";
 import { CliError, handleCliError, isCliEntrypoint } from "./shared/cli.js";
@@ -30,9 +30,9 @@ async function main(): Promise<void> {
     const config = await loadRuntimeConfig({
       ...(args.configPath ? { configPath: args.configPath } : {}),
     });
-    const tracedReleaseNotes = createPhoenixTracedWorkflow(
+    const tracedReleaseNotes = createTracedWorkflow(
       (input: ParsedArgs) => runReleaseNotes(input, logProgress),
-      config.observability?.phoenix,
+      config.observability?.telemetry,
       {
         name: "workflow.generate-release-notes",
         attributes: {
@@ -40,6 +40,7 @@ async function main(): Promise<void> {
           ...(args.issue ? { "workflow.issue": args.issue } : {}),
           "workflow.no_upload": args.noUpload === true,
         },
+        sessionId: (input) => jiraIssueSessionId(input.issue),
         input: (input) => ({
           issue: input.issue,
           outDir: input.outDir,
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
     );
     await tracedReleaseNotes(args);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -79,7 +80,7 @@ export async function runReleaseNotes(
     throw new CliError("Missing LLM config. Set LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY.");
   }
 
-  const llmClient = createLlmTextClient(config.llm, { phoenixTelemetry: config.observability?.phoenix });
+  const llmClient = createLlmTextClient(config.llm, { telemetry: config.observability?.telemetry });
   logProgress(`Using ${llmClient.provider} model ${llmClient.model}.`);
   const client = createAtlassianClient(config);
   const source = createTicketSource(config, client);

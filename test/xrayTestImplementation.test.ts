@@ -13,10 +13,7 @@ import {
   resolveAzureDevOpsRepositoryFromRemote,
 } from "../src/integrations/azureDevOps/pullRequestCreator.js";
 import { parseGitChangedFiles } from "../src/integrations/git/localGit.js";
-import {
-  DEFAULT_CLAUDE_CODE_ARGUMENTS,
-  DEFAULT_CODEX_EXEC_ARGUMENTS,
-} from "../src/workflows/xray-test-implementation/agentCommand.js";
+import { agentUsageSpanAttributes, resolveImplementationAgentRunners } from "../src/workflows/xray-test-implementation/agentRunner.js";
 import { parseXrayTestImplementationArgs, resolveImplementationCommands, type ParsedArgs } from "../src/workflows/xray-test-implementation/implementationArgs.js";
 import { checkoutImplementationBranch } from "../src/workflows/xray-test-implementation/implementationGit.js";
 import { buildXrayTestHealingPrompt, buildXrayTestImplementationPrompt } from "../src/workflows/xray-test-implementation/prompt.js";
@@ -44,15 +41,24 @@ describe("buildXrayTestImplementationPrompt", () => {
     });
 
     expect(prompt).toContain("Implement Generated Xray Test Cases for PROJ-1");
-    expect(prompt).toContain("Actionable create/update cases: 1");
-    expect(prompt).toContain("Ready actionable cases: 1");
+    expect(prompt).toContain("Total provided Xray cases: 3");
+    expect(prompt).toContain("Ready implementation candidates: 2");
+    expect(prompt).toContain("Xray create/update/deprecate issue actions: 2");
+    expect(prompt).toContain("Existing Xray keep actions requiring repository duplicate check: 1");
+    expect(prompt).toContain("Deprecated Xray cases excluded from automation: 1");
     expect(prompt).toContain("Manual Xray steps to automate");
     expect(prompt).toContain("Use Playwright for browser workflows.");
     expect(prompt).toContain('"testDirectory": "tests/e2e"');
     expect(prompt).toContain("Requested validation command: npm test");
     expect(prompt).toContain("## Implementation Contract");
     expect(prompt).toContain("Implement only the provided Xray cases");
+    expect(prompt).toContain("Do not automate action \"deprecate\" cases");
+    expect(prompt).toContain("\"keep\" means keep the existing Xray issue unchanged; \"deprecate\" means do not automate the obsolete case");
+    expect(prompt).toContain("search the repository for the Xray key, manual title, and equivalent behavior");
+    expect(prompt).toContain("Do not treat missing manual steps as proof of existing automated coverage");
     expect(prompt).toContain("Do not weaken assertions to make verification pass");
+    expect(prompt).not.toContain("Keep-only existing cases provided for context");
+    expect(prompt).not.toContain("Do not duplicate existing coverage for keep cases");
   });
 });
 
@@ -215,7 +221,7 @@ describe("runXrayTestImplementation healing", () => {
   });
 });
 
-describe("resolveImplementationCommands", () => {
+describe("resolveImplementationAgentRunners", () => {
   it("parses branch reuse opt-in", () => {
     const args = parseXrayTestImplementationArgs(["--issue", "PROJ-1", "--reuse-branch-if-possible"]);
 
@@ -246,34 +252,35 @@ describe("resolveImplementationCommands", () => {
       .toThrow("--TestDesignEnabled must be true or false");
   });
 
-  it("uses bundled Codex when LLM_PROVIDER is openai", () => {
+  it("uses the Codex SDK runner when LLM_PROVIDER is openai", () => {
     withTemporaryImplementationCommandEnv(() => {
       process.env.LLM_PROVIDER = "openai";
       process.env.MANSO_TEST_IMPLEMENTATION_COMMAND = "";
-      const commands = resolveImplementationCommands(parsedImplementationArgs());
+      const agents = resolveImplementationAgentRunners(parsedImplementationArgs(), undefined);
 
-      expect(commands.agentCommand).toContain("codex.js");
-      expect(commands.agentCommand).toContain(DEFAULT_CODEX_EXEC_ARGUMENTS);
-      expect(commands.healAgentCommand).toBe(commands.agentCommand);
+      expect(agents.implementation.kind).toBe("codex-sdk");
+      expect(agents.implementation.provider).toBe("openai");
+      expect(agents.healing).toBe(agents.implementation);
     });
   });
 
-  it("uses Claude Code when LLM_PROVIDER is anthropic", () => {
+  it("uses the Claude SDK runner when LLM_PROVIDER is anthropic", () => {
     withTemporaryImplementationCommandEnv(() => {
       process.env.LLM_PROVIDER = "anthropic";
-      const commands = resolveImplementationCommands(parsedImplementationArgs());
+      const agents = resolveImplementationAgentRunners(parsedImplementationArgs(), undefined);
 
-      expect(commands.agentCommand).toContain("claude");
-      expect(commands.agentCommand).toContain(DEFAULT_CLAUDE_CODE_ARGUMENTS);
-      expect(commands.agentCommand).not.toContain("codex.js");
-      expect(commands.healAgentCommand).toBe(commands.agentCommand);
+      expect(agents.implementation.kind).toBe("claude-sdk");
+      expect(agents.implementation.provider).toBe("anthropic");
+      expect(agents.healing).toBe(agents.implementation);
     });
   });
 
-  it("requires LLM_PROVIDER when no explicit implementation command is configured", () => {
+  it("defaults to the Codex SDK runner when no explicit implementation command is configured", () => {
     withTemporaryImplementationCommandEnv(() => {
-      expect(() => resolveImplementationCommands(parsedImplementationArgs()))
-        .toThrow("Missing LLM_PROVIDER");
+      const agents = resolveImplementationAgentRunners(parsedImplementationArgs(), undefined);
+
+      expect(agents.implementation.kind).toBe("codex-sdk");
+      expect(agents.implementation.provider).toBe("openai");
     });
   });
 
@@ -289,31 +296,84 @@ describe("resolveImplementationCommands", () => {
     });
   });
 
-  it("allows overriding the default Codex executable and arguments", () => {
+  it("allows overriding the Codex SDK executable path", () => {
     withTemporaryImplementationCommandEnv(() => {
       process.env.LLM_PROVIDER = "openai";
-      const commands = resolveImplementationCommands(parsedImplementationArgs({
+      const agents = resolveImplementationAgentRunners(parsedImplementationArgs({
         agentPath: "C:/Tools/Codex/codex.exe",
-        agentArguments: "exec --sandbox workspace-write -",
-      }));
+      }), undefined);
 
-      expect(commands.agentCommand).toContain("codex.exe");
-      expect(commands.agentCommand).toContain("exec --sandbox workspace-write -");
-      expect(commands.agentCommand).not.toContain("codex.js");
+      expect(agents.implementation.kind).toBe("codex-sdk");
     });
   });
 
-  it("allows overriding the default Claude Code executable and arguments", () => {
+  it("allows overriding the Claude SDK executable path", () => {
     withTemporaryImplementationCommandEnv(() => {
       process.env.LLM_PROVIDER = "anthropic";
-      const commands = resolveImplementationCommands(parsedImplementationArgs({
+      const agents = resolveImplementationAgentRunners(parsedImplementationArgs({
         agentPath: "C:/Tools/Claude Code/claude.exe",
-        agentArguments: "-p --model sonnet --dangerously-skip-permissions",
-      }));
+      }), undefined);
 
-      expect(commands.agentCommand).toContain("claude.exe");
-      expect(commands.agentCommand).toContain("-p --model sonnet --dangerously-skip-permissions");
-      expect(commands.agentCommand).not.toContain("codex.js");
+      expect(agents.implementation.kind).toBe("claude-sdk");
+    });
+  });
+
+  it("rejects legacy agent arguments for SDK runners", () => {
+    withTemporaryImplementationCommandEnv(() => {
+      process.env.LLM_PROVIDER = "openai";
+
+      expect(() => resolveImplementationAgentRunners(parsedImplementationArgs({
+        agentArguments: "exec --sandbox workspace-write -",
+      }), undefined)).toThrow("--agent-arguments is only supported with --agent-command");
+    });
+  });
+});
+
+describe("agentUsageSpanAttributes", () => {
+  it("maps SDK usage to Phoenix llm token and workflow attributes", () => {
+    const attributes = agentUsageSpanAttributes(
+      {
+        command: "codex-sdk",
+        exitCode: 0,
+        durationMs: 10,
+        usage: {
+          provider: "openai",
+          model: "gpt-5.5",
+          inputTokens: 100,
+          cachedInputTokens: 40,
+          cacheCreationInputTokens: 5,
+          outputTokens: 25,
+          reasoningOutputTokens: 8,
+          totalCostUsd: 0.123,
+        },
+      },
+      {
+        issueKey: "PROJ-1",
+        repoRoot: "/repo",
+        prompt: "implement",
+        env: {},
+        phase: "implementation",
+      },
+      {
+        kind: "codex-sdk",
+        provider: "openai",
+        model: "gpt-5.5",
+        commandLabel: "codex-sdk",
+        run: async () => ({ command: "codex-sdk", exitCode: 0, durationMs: 1 }),
+      },
+    );
+
+    expect(attributes).toMatchObject({
+      "llm.provider": "openai",
+      "llm.model_name": "gpt-5.5",
+      "llm.token_count.prompt": 100,
+      "llm.token_count.completion": 25,
+      "llm.token_count.cached_input": 40,
+      "llm.token_count.cache_creation_input": 5,
+      "llm.token_count.reasoning_output": 8,
+      "llm.cost.total_usd": 0.123,
+      "workflow.issue": "PROJ-1",
+      "workflow.phase": "implementation",
     });
   });
 });
@@ -516,6 +576,21 @@ function generationPack(): XrayTestGenerationPack {
           readiness: "ready",
           openQuestions: [],
           rationale: "Already covered.",
+        },
+        {
+          action: "deprecate",
+          existingTestKey: "TEST-2",
+          title: "Legacy approval path is deprecated",
+          objective: "Mark the old approval behavior as obsolete because it no longer matches the ticket acceptance criteria.",
+          priority: "medium",
+          coverageAreas: ["checkout"],
+          preconditions: [],
+          steps: [],
+          sourceEvidence: [{ source: "xray-review", reference: "TEST-2", summary: "Existing test validates behavior that is no longer accepted." }],
+          riskCovered: "obsolete regression coverage",
+          readiness: "ready",
+          openQuestions: [],
+          rationale: "The linked Xray test conflicts with the current acceptance criteria and should not remain active.",
         },
       ],
     },

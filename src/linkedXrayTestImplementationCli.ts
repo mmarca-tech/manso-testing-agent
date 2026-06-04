@@ -160,9 +160,9 @@ Options:
   --repo <dir>                     Repository root to edit. Defaults to the current working directory.
   --guidance <path>                Guidance file relative to repo root. May be repeated.
   --prompt <path>                  Prompt output path. Defaults next to xray-test-generation.json.
-  --agent-command <command>        Shell command that implements tests. Prompt is sent on stdin.
+  --agent-command <command>        Optional explicit shell command that implements tests.
   --heal-agent-command <command>   Optional shell command for verification repair attempts.
-                                   Defaults to --agent-command.
+                                   Defaults to the selected implementation runner.
   --heal-attempts <number>         Maximum repair attempts after verification failure. Defaults to 4.
   --no-heal                        Disable verification repair attempts.
   --verify-command <command>       Optional shell validation command to run before committing.

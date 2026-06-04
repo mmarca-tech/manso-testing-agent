@@ -1,0 +1,18 @@
+flowchart LR
+    ticket[Jira ticket] --> context[Context pack]
+    context --> enrichment[PR, Confluence, and Xray evidence]
+    enrichment --> generation[Xray generation pack]
+    generation --> prompt[Implementation prompt]
+    prompt --> agent[Codex or Claude implementation runner]
+    agent --> verify[Verification and healing]
+    verify --> output[JSON and Markdown artifacts]
+    output --> memory[Durable memory cabin]
+    output --> confluence[Confluence documentation]
+
+    classDef source fill:#fff6c7,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+    classDef process fill:#dff2f7,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+    classDef store fill:#ffefef,stroke:#b52a22,stroke-width:2px,color:#2f3337;
+
+    class ticket,context,enrichment source;
+    class generation,prompt,agent,verify process;
+    class output,memory,confluence store;

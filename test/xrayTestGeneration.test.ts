@@ -65,8 +65,10 @@ describe("extractXrayTestGeneration", () => {
 });
 
 describe("XrayCloudTestSink", () => {
-  it("creates, updates, keeps, and groups tests in a generated Test Set", async () => {
+  it("creates, updates, keeps, deprecates, and groups active tests in a generated Test Set", async () => {
     const jiraCalls: Array<{ method: string; url: string }> = [];
+    const jiraUpdates: unknown[] = [];
+    const jiraTransitions: unknown[] = [];
     const issueLinks: unknown[] = [];
     const xrayOperations: string[] = [];
     const sink = new XrayCloudTestSink({
@@ -74,6 +76,8 @@ describe("XrayCloudTestSink", () => {
         jira: { baseUrl: "https://example.atlassian.net", username: "user@example.com", apiToken: "token" },
         fetchFn: async (input, init) => {
           const url = String(input);
+          const path = new URL(url).pathname;
+          const method = init?.method ?? "GET";
           jiraCalls.push({ method: init?.method ?? "GET", url });
 
           if (url.includes("/issueLinkType")) {
@@ -88,6 +92,34 @@ describe("XrayCloudTestSink", () => {
           if (new URL(url).pathname.endsWith("/issueLink")) {
             issueLinks.push(JSON.parse(String(init?.body ?? "{}")));
             return jsonResponse(undefined, 201, "Created");
+          }
+
+          if (path.endsWith("/issue/TEST-4/transitions") && method === "GET") {
+            return jsonResponse({
+              transitions: [{ id: "31", name: "Deprecated", to: { name: "Deprecated" } }],
+            });
+          }
+
+          if (path.endsWith("/issue/TEST-4/transitions") && method === "POST") {
+            jiraTransitions.push(JSON.parse(String(init?.body ?? "{}")));
+            return jsonResponse(undefined, 204);
+          }
+
+          if (path.endsWith("/issue/TEST-4") && method === "PUT") {
+            jiraUpdates.push(JSON.parse(String(init?.body ?? "{}")));
+            return jsonResponse(undefined, 204);
+          }
+
+          if (path.endsWith("/issue/TEST-4")) {
+            return jsonResponse({
+              id: "10004",
+              key: "TEST-4",
+              fields: {
+                summary: "Legacy approval path",
+                labels: ["checkout"],
+                status: { name: "Approved" },
+              },
+            });
           }
 
           if (url.includes("/issue/TEST-1")) {
@@ -200,6 +232,21 @@ describe("XrayCloudTestSink", () => {
             openQuestions: ["Confirm how to simulate the provider timeout in the target environment."],
             rationale: "No existing test covers provider timeout behavior.",
           },
+          {
+            action: "deprecate",
+            existingTestKey: "TEST-4",
+            title: "Legacy approval path",
+            objective: "Mark the legacy approval path test as obsolete because it conflicts with current acceptance criteria.",
+            priority: "medium",
+            coverageAreas: ["checkout"],
+            preconditions: [],
+            steps: [],
+            sourceEvidence: [{ source: "xray-review", reference: "TEST-4", summary: "Existing test validates behavior that is no longer accepted." }],
+            riskCovered: "obsolete test coverage",
+            readiness: "ready",
+            openQuestions: [],
+            rationale: "The current ticket acceptance criteria reject the legacy approval path.",
+          },
         ],
       },
     });
@@ -211,7 +258,13 @@ describe("XrayCloudTestSink", () => {
         includedTestIssueIds: ["10001", "10002", "10003"],
       }),
     );
-    expect(application.tests.every((test) => test.linkedToTicket)).toBe(true);
+    expect(application.tests).toContainEqual(expect.objectContaining({
+      action: "deprecate",
+      status: "deprecated",
+      key: "TEST-4",
+      issueId: "10004",
+    }));
+    expect(application.tests.filter((test) => test.status !== "deprecated").every((test) => test.linkedToTicket)).toBe(true);
     expect(issueLinks).toEqual([
       expect.objectContaining({
         type: { id: "10010" },
@@ -231,6 +284,13 @@ describe("XrayCloudTestSink", () => {
     ]);
     expect(xrayOperations).toEqual(["updateTestType", "removeAllTestSteps", "addTestStep", "createTest", "createTestSet"]);
     expect(jiraCalls.some((call) => call.method === "PUT" && call.url.includes("/issue/TEST-2"))).toBe(true);
+    expect(jiraUpdates[0]).toEqual(expect.objectContaining({
+      fields: expect.objectContaining({
+        summary: "[DEPRECATED] Legacy approval path",
+        labels: expect.arrayContaining(["checkout", "deprecated", "deprecated-by-context-workflow"]),
+      }),
+    }));
+    expect(jiraTransitions).toEqual([{ transition: { id: "31" } }]);
     expect(jiraCalls.filter((call) => call.method === "GET" && call.url.includes("/issueLinkType"))).toHaveLength(1);
     expect(jiraCalls.filter((call) => call.method === "POST" && new URL(call.url).pathname.endsWith("/issueLink"))).toHaveLength(3);
     expect(sink.getProvenance().some((item) => item.toolName === "xray:createTestSet" && item.success)).toBe(true);

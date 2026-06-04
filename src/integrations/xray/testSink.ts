@@ -22,6 +22,9 @@ export interface XrayCloudTestSinkOptions {
 interface ResolvedJiraIssue {
   key: string;
   issueId: string;
+  summary?: string;
+  labels: string[];
+  status?: string;
 }
 
 interface JiraIssueLinkType {
@@ -29,6 +32,12 @@ interface JiraIssueLinkType {
   name: string;
   inward: string;
   outward: string;
+}
+
+interface JiraTransition {
+  id: string;
+  name: string;
+  toName?: string;
 }
 
 export class XrayCloudTestSink implements XrayTestSink {
@@ -64,7 +73,7 @@ export class XrayCloudTestSink implements XrayTestSink {
     }
 
     const testsForSet = uniqueBy(
-      appliedTests.filter((test): test is AppliedXrayTestCase & { issueId: string } => Boolean(test.issueId)),
+      appliedTests.filter((test): test is AppliedXrayTestCase & { issueId: string } => test.status !== "deprecated" && Boolean(test.issueId)),
       (test) => test.issueId,
     );
     this.log(`Creating generated Test Set with ${testsForSet.length} resolved test issue id(s).`);
@@ -115,6 +124,10 @@ export class XrayCloudTestSink implements XrayTestSink {
       };
     }
 
+    if (testCase.action === "deprecate") {
+      return this.deprecateTest(existing, input, testCase);
+    }
+
     return this.updateTest(existing, input, testCase);
   }
 
@@ -158,6 +171,50 @@ export class XrayCloudTestSink implements XrayTestSink {
       ...(key ? { key } : {}),
       ...(issueId ? { issueId } : {}),
       warnings: xrayWarnings,
+    };
+  }
+
+  private async deprecateTest(
+    existing: ResolvedJiraIssue,
+    input: ApplyXrayTestsInput,
+    testCase: XrayGeneratedTestCase,
+  ): Promise<AppliedXrayTestCase> {
+    const warnings: string[] = [];
+    const labels = uniqueBy([...existing.labels, "deprecated", "deprecated-by-context-workflow"], (label) => label.toLowerCase());
+
+    await this.callJira("markJiraTestIssueDeprecated", "jira-rest:update-issue", () =>
+      this.jira.putJson("jira", `/rest/api/3/issue/${encodeURIComponent(existing.key)}`, {
+        fields: {
+          summary: deprecatedSummary(existing.summary ?? testCase.title),
+          labels,
+          description: jiraDescription(input, testCase),
+        },
+      }),
+    );
+
+    if (normalizeStatusName(existing.status ?? "") !== "deprecated") {
+      try {
+        const transitioned = await this.transitionIssueToDeprecated(existing.key);
+        if (!transitioned) {
+          const message = `No available Jira transition to a Deprecated status was found for ${existing.key}. The issue was still marked with deprecated labels and description.`;
+          warnings.push(message);
+          this.addWarning("xrayTests", "jira-rest:transition-issue", message);
+        }
+      } catch (error) {
+        const message = `Could not transition ${existing.key} to Deprecated: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        this.addWarning("xrayTests", "jira-rest:transition-issue", message);
+      }
+    }
+
+    return {
+      action: "deprecate",
+      status: "deprecated",
+      requestedTitle: testCase.title,
+      existingTestKey: existing.key,
+      key: existing.key,
+      issueId: existing.issueId,
+      warnings,
     };
   }
 
@@ -263,20 +320,29 @@ export class XrayCloudTestSink implements XrayTestSink {
 
   private async resolveJiraIssue(issueKey: string): Promise<ResolvedJiraIssue> {
     const response = await this.callJira("resolveJiraIssue", "jira-rest:issue", () =>
-      this.jira.getJson("jira", `/rest/api/3/issue/${encodeURIComponent(issueKey)}`, { fields: "summary" }),
+      this.jira.getJson("jira", `/rest/api/3/issue/${encodeURIComponent(issueKey)}`, { fields: "summary,labels,status" }),
     );
     const issueId = firstString(response, ["id"]);
     const key = firstString(response, ["key"]) ?? issueKey;
+    const summary = firstString(response, ["fields.summary", "summary"]);
+    const labels = stringArray(firstPresent(response, ["fields.labels", "labels"]));
+    const status = firstString(response, ["fields.status.name", "status.name", "status"]);
 
     if (!issueId) {
       throw new Error(`Jira issue ${issueKey} did not include numeric issue id.`);
     }
 
-    return { key, issueId };
+    return {
+      key,
+      issueId,
+      labels,
+      ...(summary ? { summary } : {}),
+      ...(status ? { status } : {}),
+    };
   }
 
   private async linkAppliedTestToTicket(ticketKey: string, applied: AppliedXrayTestCase): Promise<void> {
-    if (!applied.key || applied.status === "skipped") {
+    if (!applied.key || applied.status === "skipped" || applied.status === "deprecated") {
       return;
     }
 
@@ -334,6 +400,23 @@ export class XrayCloudTestSink implements XrayTestSink {
     this.cachedTestIssueLinkType = selected;
     this.log(`Resolved Jira tests issue link type ${selected.name} (${selected.id}) using outward "${selected.outward}" and inward "${selected.inward}".`);
     return selected;
+  }
+
+  private async transitionIssueToDeprecated(issueKey: string): Promise<boolean> {
+    const response = await this.callJira("getJiraIssueTransitions", "jira-rest:issue-transitions", () =>
+      this.jira.getJson("jira", `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`),
+    );
+    const transition = normalizeTransitions(firstPresent(response, ["transitions"])).find(isDeprecatedTransition);
+    if (!transition) {
+      return false;
+    }
+
+    await this.callJira("transitionJiraTestIssueToDeprecated", "jira-rest:transition-issue", () =>
+      this.jira.postJson("jira", `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+        transition: { id: transition.id },
+      }),
+    );
+    return true;
   }
 
   private async callXray(method: string, toolName: string, action: () => Promise<unknown>): Promise<unknown> {
@@ -434,6 +517,15 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
+function deprecatedSummary(summary: string): string {
+  const trimmed = summary.trim();
+  if (/^\[?deprecated\]?[:\s-]/i.test(trimmed) || /^deprecated$/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `[DEPRECATED] ${trimmed}`;
+}
+
 function extractIssueKey(testOrTestSet: unknown): string | undefined {
   const jira = firstPresent(testOrTestSet, ["jira"]);
 
@@ -487,6 +579,33 @@ function normalizeIssueLinkTypes(value: unknown): JiraIssueLinkType[] {
     .filter((item): item is JiraIssueLinkType => Boolean(item));
 }
 
+function normalizeTransitions(value: unknown): JiraTransition[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item): JiraTransition | undefined => {
+      if (!isRecord(item)) {
+        return undefined;
+      }
+
+      const id = firstString(item, ["id"]);
+      const name = firstString(item, ["name"]);
+      if (!id || !name) {
+        return undefined;
+      }
+
+      const toName = firstString(item, ["to.name", "to.statusCategory.name"]);
+      return {
+        id,
+        name,
+        ...(toName ? { toName } : {}),
+      };
+    })
+    .filter((item): item is JiraTransition => Boolean(item));
+}
+
 function isTestsIssueLinkType(linkType: JiraIssueLinkType, configuredName: string | undefined): boolean {
   const expectedName = configuredName?.trim().toLowerCase();
   if (expectedName && linkType.name.toLowerCase() === expectedName) {
@@ -497,6 +616,14 @@ function isTestsIssueLinkType(linkType: JiraIssueLinkType, configuredName: strin
     linkType.name.toLowerCase() === "tests" ||
     (linkType.outward.toLowerCase() === "tests" && linkType.inward.toLowerCase() === "is tested by")
   );
+}
+
+function isDeprecatedTransition(transition: JiraTransition): boolean {
+  return normalizeStatusName(transition.name) === "deprecated" || normalizeStatusName(transition.toName ?? "") === "deprecated";
+}
+
+function normalizeStatusName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 const CREATE_TEST_MUTATION = `mutation CreateManualTest($testType: UpdateTestTypeInput!, $steps: [CreateStepInput], $jira: JSON!) {

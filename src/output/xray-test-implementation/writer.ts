@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { XrayTestImplementationPack } from "../../domain/xrayTestImplementation/schema.js";
+import { mirrorArtifactSetToMemory } from "../../memory/memoryCabin.js";
 import { renderXrayTestImplementationMarkdown } from "./renderer.js";
 
 export interface WriteXrayTestImplementationResult {
@@ -19,6 +20,14 @@ export async function writeXrayTestImplementationPack(
   await mkdir(directory, { recursive: true });
   await writeFile(jsonPath, `${JSON.stringify(pack, null, 2)}\n`, "utf8");
   await writeFile(markdownPath, renderXrayTestImplementationMarkdown(pack), "utf8");
+  await mirrorArtifactSetToMemory({
+    workflow: "xray-test-implementation",
+    directory,
+    files: [
+      { path: jsonPath, kind: "json" },
+      { path: markdownPath, kind: "markdown" },
+    ],
+  });
 
   return { directory, jsonPath, markdownPath };
 }

@@ -15,12 +15,18 @@ import {
   AzureDevOpsPullRequestCreator,
   resolveAzureDevOpsRepository,
 } from "./integrations/azureDevOps/pullRequestCreator.js";
-import { createPhoenixTracedWorkflow, flushPhoenixTelemetry } from "./integrations/llm/telemetry/phoenix.js";
+import {
+  createTracedWorkflow,
+  flushTelemetry,
+  jiraIssueSessionId,
+  setActiveSpanAttributes,
+} from "./integrations/llm/telemetry/observability.js";
 import {
   gitCurrentHeadSha,
   gitCurrentRemoteUrl,
   runGit,
 } from "./integrations/git/localGit.js";
+import { mirrorFileToMemory } from "./memory/memoryCabin.js";
 import { runContextExtractor } from "./contextExtractorCli.js";
 import { writeXrayTestImplementationPack } from "./output/xray-test-implementation/writer.js";
 import { CliError, handleCliError, isCliEntrypoint } from "./shared/cli.js";
@@ -35,11 +41,14 @@ import {
   parseXrayTestImplementationArgs,
   printXrayTestImplementationHelp,
   promptOnlyReason,
-  resolveImplementationCommands,
   resolvePromptPath,
   resolveXrayTestGenerationPath,
   type ParsedArgs,
 } from "./workflows/xray-test-implementation/implementationArgs.js";
+import {
+  resolveImplementationAgentRunners,
+  runImplementationAgent,
+} from "./workflows/xray-test-implementation/agentRunner.js";
 import {
   assertCleanWorktree,
   buildCommandEnvironment,
@@ -54,7 +63,6 @@ import {
   writeFailedImplementationPack,
 } from "./workflows/xray-test-implementation/implementationPackWriter.js";
 import {
-  runCheckedShellCommand,
   runShellCommandResult,
   runVerificationHealingLoop,
 } from "./workflows/xray-test-implementation/verificationHealing.js";
@@ -72,7 +80,7 @@ async function main(): Promise<void> {
   try {
     await runXrayTestImplementation(args);
   } finally {
-    await flushPhoenixTelemetry();
+    await flushTelemetry();
   }
 }
 
@@ -83,9 +91,9 @@ export async function runXrayTestImplementation(
   const config = await loadRuntimeConfig({
     ...(args.configPath ? { configPath: args.configPath } : {}),
   });
-  const tracedWorkflow = createPhoenixTracedWorkflow(
+  const tracedWorkflow = createTracedWorkflow(
     (input: ParsedArgs) => runXrayTestImplementationUntraced(input, logProgress, config),
-    config.observability?.phoenix,
+    config.observability?.telemetry,
     {
       name: "workflow.implement-xray-tests",
       attributes: {
@@ -94,6 +102,7 @@ export async function runXrayTestImplementation(
         "workflow.prompt_only": args.promptOnly,
         "workflow.dry_run": args.dryRun,
       },
+      sessionId: (input) => jiraIssueSessionId(input.issue),
       input: (input) => ({
         issue: input.issue,
         xrayTestGenerationPath: input.xrayTestGenerationPath,
@@ -130,11 +139,15 @@ export async function runXrayTestImplementationFromPack(
   args: ParsedArgs,
   logProgress = createProgressLogger("implement-xray-tests"),
 ): Promise<void> {
+  const config = await loadRuntimeConfig({
+    ...(args.configPath ? { configPath: args.configPath } : {}),
+  });
   const repoRoot = resolve(args.repoRoot);
   const xrayTestGenerationPath = resolveXrayTestGenerationPath(args);
   const outputDir = dirname(xrayTestGenerationPath);
   logProgress(`Loading Xray test generation pack from ${xrayTestGenerationPath}.`);
   const generation = XrayTestGenerationPackSchema.parse(JSON.parse(await readFile(xrayTestGenerationPath, "utf8")));
+  setActiveSpanAttributes({ "workflow.issue": generation.ticket.key });
 
   let branch = normalizeBranchName(args.branch ?? defaultImplementationBranch(generation.ticket.key));
   const targetBranch = await resolveTargetBranch(repoRoot, args.targetBranch);
@@ -172,7 +185,7 @@ export async function runXrayTestImplementationFromPack(
   const promptPath = resolvePromptPath(args, outputDir);
 
   if (args.promptOnly) {
-    await writePrompt(promptPath, prompt, logProgress, tools);
+    await writePrompt(promptPath, prompt, generation.ticket.key, logProgress, tools);
     const pack = buildXrayTestImplementationPack({
       generation,
       xrayTestGenerationPath,
@@ -198,7 +211,7 @@ export async function runXrayTestImplementationFromPack(
     return;
   }
 
-  const commands = resolveImplementationCommands(args);
+  const agents = resolveImplementationAgentRunners(args, config);
   const startingChangedFiles = await assertCleanWorktree(repoRoot, args.allowDirty);
   const checkout = await checkoutImplementationBranch({
     repoRoot,
@@ -208,18 +221,26 @@ export async function runXrayTestImplementationFromPack(
     tools,
     logProgress,
   });
-  await writePrompt(promptPath, prompt, logProgress, tools);
+  await writePrompt(promptPath, prompt, generation.ticket.key, logProgress, tools);
 
-  logProgress("Running test implementation agent command. The implementation prompt is passed on stdin and through MANSO_TEST_IMPLEMENTATION_PROMPT.");
-  const implementationCommand = await runCheckedShellCommand(
-    commands.agentCommand,
-    repoRoot,
-    buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch),
-    prompt,
+  logProgress(`Running test implementation agent through ${agents.implementation.commandLabel}.`);
+  const implementationCommand = await runImplementationAgent(
+    agents.implementation,
+    {
+      issueKey: generation.ticket.key,
+      repoRoot,
+      prompt,
+      env: buildCommandEnvironment(promptPath, generation.ticket.key, branch, targetBranch),
+      phase: "implementation",
+    },
+    config.observability?.telemetry,
   );
+  if (implementationCommand.exitCode !== 0) {
+    throw new Error(`${implementationCommand.command} failed with exit code ${implementationCommand.exitCode}.`);
+  }
   tools.push({
     method: "runImplementationCommand",
-    toolName: "shell:agent-command",
+    toolName: `agent:${agents.implementation.kind}`,
     calledAt: new Date().toISOString(),
     success: true,
   });
@@ -239,7 +260,7 @@ export async function runXrayTestImplementationFromPack(
     logProgress("Implementation command completed without repository changes; continuing with the reused implementation branch.");
     warnings.push({
       section: "implementation",
-      toolName: "shell:agent-command",
+      toolName: `agent:${agents.implementation.kind}`,
       message: "Implementation command completed without repository changes; reused the existing implementation branch.",
     });
   } else {
@@ -277,7 +298,8 @@ export async function runXrayTestImplementationFromPack(
       promptPath,
       outputDir,
       verifyCommand,
-      healAgentCommand: commands.healAgentCommand,
+      healAgentRunner: agents.healing,
+      ...(config.observability?.telemetry ? { telemetry: config.observability.telemetry } : {}),
       maxHealAttempts,
       initialVerification: verification,
       healingPromptPaths,
@@ -430,20 +452,21 @@ async function resolveImplementationGenerationPack(
   }
 
   logProgress("Test design is disabled; extracting existing linked Xray tests from the ticket.");
-  const tracedContextExtractor = createPhoenixTracedWorkflow(
+  const tracedContextExtractor = createTracedWorkflow(
     (input: ParsedArgs) => runContextExtractor({
       ...(input.issue ? { issue: input.issue } : {}),
       outDir: input.outDir,
       ...(input.configPath ? { configPath: input.configPath } : {}),
       help: false,
     }, logProgress),
-    config.observability?.phoenix,
+    config.observability?.telemetry,
     {
       name: "task.context-extractor",
       attributes: {
         "workflow.name": "context-extractor",
         "workflow.issue": args.issue,
       },
+      sessionId: (input) => jiraIssueSessionId(input.issue),
       input: (input) => ({
         issue: input.issue,
         outDir: input.outDir,
@@ -465,9 +488,9 @@ async function runTracedImplementationFromPack(
   config: Awaited<ReturnType<typeof loadRuntimeConfig>>,
   logProgress: (message: string) => void,
 ): Promise<void> {
-  const tracedImplementation = createPhoenixTracedWorkflow(
+  const tracedImplementation = createTracedWorkflow(
     (input: ParsedArgs) => runXrayTestImplementationFromPack(input, logProgress),
-    config.observability?.phoenix,
+    config.observability?.telemetry,
     {
       name: "workflow.test-implementation",
       attributes: {
@@ -476,6 +499,7 @@ async function runTracedImplementationFromPack(
         "workflow.prompt_only": args.promptOnly,
         "workflow.dry_run": args.dryRun,
       },
+      sessionId: (input) => jiraIssueSessionId(input.issue),
       input: (input) => ({
         issue: input.issue,
         xrayTestGenerationPath: input.xrayTestGenerationPath,
@@ -511,11 +535,18 @@ async function readGuidanceFiles(repoRoot: string, paths: string[]): Promise<Xra
 async function writePrompt(
   promptPath: string,
   prompt: string,
+  issueKey: string,
   logProgress: (message: string) => void,
   tools: ToolProvenance[],
 ): Promise<void> {
   await mkdir(dirname(promptPath), { recursive: true });
   await writeFile(promptPath, prompt, "utf8");
+  await mirrorFileToMemory({
+    workflow: "xray-test-implementation-prompt",
+    path: promptPath,
+    kind: "markdown",
+    scope: { type: "jira", id: issueKey },
+  });
   logProgress(`Wrote implementation prompt to ${promptPath}.`);
   tools.push({
     method: "writeImplementationPrompt",

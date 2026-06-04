@@ -15,7 +15,7 @@ export const XrayReviewedTestCaseSchema = z
     coveredBehaviors: z.array(z.string()),
     testDataOrPreconditions: z.array(z.string()),
     gapsOrAmbiguities: z.array(z.string()),
-    updateRecommendation: z.enum(["keep", "update", "unclear"]),
+    updateRecommendation: z.enum(["keep", "update", "deprecate", "unclear"]),
     rationale: z.string().min(1),
   })
   .strict();

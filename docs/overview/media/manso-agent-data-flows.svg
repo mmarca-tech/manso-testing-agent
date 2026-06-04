@@ -1,0 +1,122 @@
+<svg width="1300" height="560" viewBox="0 0 1300 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Manso agent data flows</title>
+  <desc id="desc">Three data flows for Xray design and implementation, release notes, and pull request review.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2f3337" />
+    </marker>
+    <style>
+      .lane { fill: #ffffff; stroke: #d6d8dc; stroke-width: 1; rx: 8; }
+      .source { fill: #fff6c7; stroke: #b52a22; stroke-width: 2; rx: 8; }
+      .artifact { fill: #ffefef; stroke: #b52a22; stroke-width: 2; rx: 8; }
+      .process { fill: #dff2f7; stroke: #b52a22; stroke-width: 2; rx: 8; }
+      .external { fill: #e8f5e9; stroke: #b52a22; stroke-width: 2; rx: 8; }
+      .lane-title { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 700; fill: #2f3337; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-size: 14px; fill: #2f3337; text-anchor: middle; dominant-baseline: middle; }
+      .small { font-size: 12px; }
+      .arrow { stroke: #2f3337; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1300" height="560" fill="#ffffff" />
+
+  <g>
+    <rect class="lane" x="20" y="25" width="1260" height="155" />
+    <text class="lane-title" x="40" y="55">Xray design and implementation</text>
+
+    <rect class="source" x="40" y="85" width="130" height="60" />
+    <text class="label" x="105" y="115">Jira issue</text>
+
+    <rect class="artifact" x="190" y="85" width="130" height="60" />
+    <text class="label" x="255" y="108">context</text>
+    <text class="label small" x="255" y="128">.json / .md</text>
+
+    <rect class="process" x="340" y="75" width="145" height="80" />
+    <text class="label" x="412.5" y="101">optional</text>
+    <text class="label" x="412.5" y="121">enrichment</text>
+    <text class="label small" x="412.5" y="139">packs</text>
+
+    <rect class="artifact" x="505" y="75" width="155" height="80" />
+    <text class="label" x="582.5" y="100">xray-test</text>
+    <text class="label" x="582.5" y="120">generation</text>
+    <text class="label small" x="582.5" y="138">.json / .md</text>
+
+    <rect class="artifact" x="680" y="75" width="155" height="80" />
+    <text class="label" x="757.5" y="100">implementation</text>
+    <text class="label" x="757.5" y="120">prompt</text>
+    <text class="label small" x="757.5" y="138">.md</text>
+
+    <rect class="process" x="855" y="85" width="130" height="60" />
+    <text class="label" x="920" y="108">implementation</text>
+    <text class="label small" x="920" y="128">agent</text>
+
+    <rect class="process" x="1005" y="75" width="130" height="80" />
+    <text class="label" x="1070" y="101">verification</text>
+    <text class="label" x="1070" y="121">and healing</text>
+
+    <rect class="artifact" x="1155" y="75" width="105" height="80" />
+    <text class="label" x="1207.5" y="100">xray-test</text>
+    <text class="label" x="1207.5" y="120">implementation</text>
+    <text class="label small" x="1207.5" y="138">.json / .md</text>
+
+    <path class="arrow" d="M170 115 H190" />
+    <path class="arrow" d="M320 115 H340" />
+    <path class="arrow" d="M485 115 H505" />
+    <path class="arrow" d="M660 115 H680" />
+    <path class="arrow" d="M835 115 H855" />
+    <path class="arrow" d="M985 115 H1005" />
+    <path class="arrow" d="M1135 115 H1155" />
+  </g>
+
+  <g>
+    <rect class="lane" x="20" y="205" width="1260" height="145" />
+    <text class="lane-title" x="40" y="235">Release notes</text>
+
+    <rect class="source" x="90" y="260" width="190" height="60" />
+    <text class="label" x="185" y="290">Release Jira issue</text>
+
+    <rect class="process" x="380" y="260" width="190" height="60" />
+    <text class="label" x="475" y="283">linked issue</text>
+    <text class="label small" x="475" y="303">context</text>
+
+    <rect class="artifact" x="670" y="260" width="190" height="60" />
+    <text class="label" x="765" y="283">release-notes</text>
+    <text class="label small" x="765" y="303">.json / .md</text>
+
+    <rect class="external" x="960" y="260" width="190" height="60" />
+    <text class="label" x="1055" y="283">optional Jira</text>
+    <text class="label small" x="1055" y="303">field update</text>
+
+    <path class="arrow" d="M280 290 H380" />
+    <path class="arrow" d="M570 290 H670" />
+    <path class="arrow" d="M860 290 H960" />
+  </g>
+
+  <g>
+    <rect class="lane" x="20" y="375" width="1260" height="155" />
+    <text class="lane-title" x="40" y="405">Pull request review</text>
+
+    <rect class="source" x="70" y="435" width="165" height="60" />
+    <text class="label" x="152.5" y="465">Azure DevOps PR</text>
+
+    <rect class="process" x="290" y="435" width="165" height="60" />
+    <text class="label" x="372.5" y="458">detected Jira</text>
+    <text class="label small" x="372.5" y="478">ticket</text>
+
+    <rect class="process" x="510" y="425" width="180" height="80" />
+    <text class="label" x="600" y="451">PR diff and</text>
+    <text class="label" x="600" y="471">ticket context</text>
+
+    <rect class="artifact" x="745" y="435" width="165" height="60" />
+    <text class="label" x="827.5" y="458">code-review</text>
+    <text class="label small" x="827.5" y="478">.json / .md</text>
+
+    <rect class="external" x="965" y="435" width="165" height="60" />
+    <text class="label" x="1047.5" y="458">optional PR</text>
+    <text class="label small" x="1047.5" y="478">thread</text>
+
+    <path class="arrow" d="M235 465 H290" />
+    <path class="arrow" d="M455 465 H510" />
+    <path class="arrow" d="M690 465 H745" />
+    <path class="arrow" d="M910 465 H965" />
+  </g>
+</svg>

@@ -4,6 +4,10 @@ TypeScript/Node CLI workflow for turning one Jira ticket into downstream context
 
 The project uses first-party Atlassian REST/GraphQL, Azure DevOps REST for PR diffs, Xray Cloud GraphQL, and direct LLM provider integrations for bounded summaries/plans. It does not use Rovo or a Jira MCP server.
 
+## Documentation
+
+Confluence-ready documentation lives under `docs/`. The validation pipeline publishes that folder with the local `publish-confluence-docs` script after `main` validation when the Confluence parent page variable is configured.
+
 ## Quick Start
 
 Install dependencies:
@@ -53,7 +57,7 @@ npx implement-xray-tests --issue ABC-123 --out ./out --TestDesignEnabled true
 npx review-pull-request --out ./out
 ```
 
-`manso-testing-agent` includes `@openai/codex` as a runtime dependency and uses it by default for implementation and healing, so downstream projects do not need to install Codex separately or pass `--agent-command` for the normal Codex flow. You still need to authenticate Codex with either its normal local login state or an API key before running a real implementation command. Use `--agent-command` only when you want a different code agent.
+`manso-testing-agent` runs implementation and healing through SDK runners by default: `LLM_PROVIDER=openai` uses `@openai/codex-sdk`, and `LLM_PROVIDER=anthropic` uses `@anthropic-ai/claude-agent-sdk`. Downstream projects do not need to pass `--agent-command` for the normal Codex or Claude flow. Use `--agent-command` only when you explicitly want a custom shell command.
 
 Import the workflow APIs when you want to compose the steps yourself:
 
@@ -98,21 +102,9 @@ Before publishing or consuming the package tarball, verify the packaged contents
 npm run pack:dry-run
 ```
 
-## Publish To npm
-
-The repository includes `.woodpecker/publish.yaml` for publishing `manso-testing-agent` to the npm registry from semantic version tags.
-
-Publishing is intentionally separated from validation:
-
-- `.woodpecker/tests.yaml` validates pull requests and `main` with install, typecheck, tests, build, and package dry-run.
-- `.woodpecker/version-tag.yaml` validates `main`, creates the next semantic version tag, and pushes it.
-- `.woodpecker/publish.yaml` publishes only from tags matching `v*`.
-
-The publish workflow writes a temporary `.npmrc` from the `npm_token` secret; no token is stored in the repo. The npm token must have permission to publish the package.
-
 ## Automated Version Tags
 
-The repository includes `.woodpecker/version-tag.yaml` for main-branch semantic version tagging. It is designed for this flow:
+The repository includes `.azure/azure-pipelines-version-tag.yml` for main-branch semantic version tagging. It is designed for this flow:
 
 1. Create the first stable tag manually, for example `v0.1.1`.
 2. Merge a PR into `main`.
@@ -135,7 +127,8 @@ If no marker is present, it uses `patch`.
 Requirements:
 
 - `main` should be protected so changes land through PRs.
-- The configured CI credentials must be allowed to create and push tags.
+- The repository build service must be allowed to create and push tags.
+- The pipeline checkout keeps credentials with `persistCredentials: true`.
 
 Manual release fallback:
 
@@ -147,7 +140,7 @@ git push origin v0.1.3
 For a local authenticated publish, make sure `package.json` has the version you intend to publish, then use:
 
 ```powershell
-npm run publish:npm
+npm run publish:azure
 ```
 
 ## Public Workflows
@@ -155,6 +148,21 @@ npm run publish:npm
 The package intentionally exposes four workflow commands. Lower-level extractors and adapters remain internal TypeScript building blocks, but they are not published as CLI entrypoints.
 
 Issue-based outputs are written under `out/<issue-key>/`; pull request review outputs are written under `out/pr-<pull-request-id>/`.
+
+### Durable Memory Cabin
+
+Set `MANSO_MEMORY_ROOT` to the `manso-memory-cabin` Git repository URL when generated artifacts should persist beyond the local `out` directory and be available from any target repository:
+
+```env
+MANSO_MEMORY_ROOT=https://your-git-host/your-org/manso-memory-cabin.git
+MANSO_MEMORY_ENABLED=true
+```
+
+When `MANSO_MEMORY_ROOT` is a Git URL, the agent clones it into `~/.manso/memory-cabins/<repo>-<hash>` on first use and reuses that clone later. Set `MANSO_MEMORY_CACHE_DIR` to choose a different clone cache and `MANSO_MEMORY_BRANCH` to force a branch. Local filesystem paths still work for development. Existing clean clones are refreshed with `git fetch` and `git pull --ff-only`; dirty clones are left as-is so local memory writes are not overwritten.
+
+When enabled, every generated JSON/Markdown workflow output is mirrored into `artifacts/<scope>/<id>/latest/` plus a timestamped `artifacts/<scope>/<id>/runs/<timestamp>-<workflow>/` snapshot in the local memory clone. If the memory root is a Git repository, each mirrored artifact set is committed and pushed back to the memory remote. If direct push to the configured memory branch is rejected, the agent pushes a `manso-memory/<scope>/<id>` branch and opens or updates an Azure DevOps pull request back to the memory branch. Implementation and healing prompts are retained there too. The same memory root can also own Juana's editable persona at `persona/juana-manso.md`; when that file exists, LLM-backed workflows use it instead of the packaged fallback persona.
+
+Memory writes are non-blocking by default: a failed mirror logs a warning and the workflow continues. Set `MANSO_MEMORY_STRICT=true` when missing memory retention should fail the run.
 
 | Command | Main use | Writes | Mutates external systems |
 | --- | --- | --- | --- |
@@ -221,15 +229,15 @@ npx review-pull-request --out ./out
 
 Pass `--ticket ABC-123` to override detection, `--no-comment` to write artifacts only, or `--organization`, `--project`, `--repository`, and `--pull-request-id` when running outside an Azure DevOps PR pipeline. In Azure DevOps, expose `$(System.AccessToken)` as `SYSTEM_ACCESSTOKEN` or provide `AZURE_DEVOPS_PAT`, and make sure the build service identity can read code and create pull request threads.
 
-`implement-xray-tests` is designed to be invoked from the repository that should receive automated tests. The package stays repo-agnostic by reading repository-owned guidance files and passing them to the implementation agent selected by `LLM_PROVIDER`: `openai` uses bundled Codex, and `anthropic` uses Claude Code. A fully custom command is still available through `--agent-command`:
+`implement-xray-tests` is designed to be invoked from the repository that should receive automated tests. The package stays repo-agnostic by reading repository-owned guidance files and passing them to the implementation agent selected by `LLM_PROVIDER`: `openai` uses the Codex SDK runner, and `anthropic` uses the Claude SDK runner. A fully custom shell command is still available through `--agent-command`:
 
 ```powershell
 npx implement-xray-tests --issue ABC-123 --out ./out --verify-command "npm test"
 ```
 
-When `--verify-command` fails, `implement-xray-tests` automatically runs a verification healing loop before committing. It passes the failed command output to the same agent command up to four times by default. Use `--heal-attempts <number>` to change the retry count, `--heal-agent-command "<command>"` to use a different repair command, or `--no-heal` to preserve fail-fast verification. PR creation remains gated on a passing verification command.
+When `--verify-command` fails, `implement-xray-tests` automatically runs a verification healing loop before committing. It passes the failed command output to the same agent runner up to four times by default. Use `--heal-attempts <number>` to change the retry count, `--heal-agent-command "<command>"` to use a different explicit shell repair command, or `--no-heal` to preserve fail-fast verification. PR creation remains gated on a passing verification command.
 
-For `LLM_PROVIDER=openai`, the default command is bundled `@openai/codex` with `exec --ephemeral --ignore-rules --dangerously-bypass-approvals-and-sandbox -`. For `LLM_PROVIDER=anthropic`, the default command is bundled Claude Code from `@anthropic-ai/claude-agent-sdk` with `-p --input-format text --dangerously-skip-permissions`. Use only the generic overrides `--agent-path` / `MANSO_TEST_IMPLEMENTATION_AGENT_PATH` and `--agent-arguments` / `MANSO_TEST_IMPLEMENTATION_AGENT_ARGUMENTS` when the selected default executable or arguments need to change.
+For `LLM_PROVIDER=openai`, the default runner calls `@openai/codex-sdk` `runStreamed()` and records usage from `turn.completed`. For `LLM_PROVIDER=anthropic`, the default runner calls `@anthropic-ai/claude-agent-sdk` `query()` and records usage and `total_cost_usd` from the result message. `--agent-path` / `MANSO_TEST_IMPLEMENTATION_AGENT_PATH` overrides the provider executable. `--agent-arguments` / `MANSO_TEST_IMPLEMENTATION_AGENT_ARGUMENTS` is only valid with an explicit shell `--agent-command`.
 
 Pass `--reuse-branch-if-possible` when rerunning implementation for a ticket that may already have an implementation PR. The CLI first looks for an active Azure DevOps PR on the target branch, preferring the requested implementation branch, then an older suffixed implementation branch for the same ticket. If it finds one, it checks out that PR source branch from `origin`, fast-forwards it, runs implementation again, reuses the PR, and pushes only when new changes are committed. If no matching PR or branch exists, it falls back to creating the branch from the target/base branch.
 
@@ -240,7 +248,7 @@ By default it requires these files relative to the target repo root:
 - `.manso/testgen.md`
 - `.manso/repo-conventions.json`
 
-The implementation command receives the prompt on stdin and these environment variables: `MANSO_TEST_IMPLEMENTATION_PROMPT`, `MANSO_TEST_ISSUE`, `MANSO_TEST_BRANCH`, and `MANSO_TEST_TARGET_BRANCH`. For a real implementation run, the CLI fetches the target/base branch from `origin`, creates a separate implementation branch from that base unless `--reuse-branch-if-possible` finds an active PR or existing branch to reuse, commits the new test changes, pushes only the implementation branch, and creates or reuses an Azure DevOps PR. It never commits or pushes directly to the target/base branch. Use `--prompt-only` to only produce the prompt without any git mutations.
+SDK runners receive the prompt directly and explicit shell commands receive it on stdin. All runners receive these environment variables: `MANSO_TEST_IMPLEMENTATION_PROMPT`, `MANSO_TEST_ISSUE`, `MANSO_TEST_BRANCH`, and `MANSO_TEST_TARGET_BRANCH`. For a real implementation run, the CLI fetches the target/base branch from `origin`, creates a separate implementation branch from that base unless `--reuse-branch-if-possible` finds an active PR or existing branch to reuse, commits the new test changes, pushes only the implementation branch, and creates or reuses an Azure DevOps PR. It never commits or pushes directly to the target/base branch. Use `--prompt-only` to only produce the prompt without any git mutations.
 
 ## Configuration
 
@@ -281,29 +289,54 @@ For `review-pull-request` inside an Azure DevOps PR pipeline, `SYSTEM_ACCESSTOKE
 The public LLM-backed workflows are:
 
 - `generate-xray-tests`: extracts the issue context, summarizes available PR/Confluence/Xray evidence, creates a strict Xray manual test plan, and optionally uploads it.
-- `implement-xray-tests`: creates or reuses an Xray test implementation pack, writes a repo-specific implementation prompt, and invokes bundled Codex, Claude Code, or your configured code-agent command.
+- `implement-xray-tests`: creates or reuses an Xray test implementation pack, writes a repo-specific implementation prompt, and invokes the Codex SDK runner, Claude SDK runner, or your explicitly configured code-agent shell command.
 - `generate-release-notes`: extracts a release ticket plus linked Jira ticket context and generates release notes.
 - `review-pull-request`: reviews the active Azure DevOps PR against the detected Jira ticket and posts a PR thread.
 
 Internally, the test-design and implementation workflows compose smaller adapters for PR-diff summaries, Confluence impact summaries, existing-Xray-test review, Xray test planning, and implementation prompting. Those adapters are library building blocks, not public CLI entrypoints.
 
-The LLM-backed adapters use a shared QA persona named Juana: rigorous, skeptical, evidence-led, and bounded to the retrieved Jira, Confluence, PR diff, and Xray context. The prompts require English output, explicit uncertainty, and traceability from proposed tests back to source evidence.
+The LLM-backed adapters use a shared QA persona named Juana: rigorous, skeptical, evidence-led, and bounded to the retrieved Jira, Confluence, PR diff, and Xray context. The prompts require English output, explicit uncertainty, and traceability from proposed tests back to source evidence. When `MANSO_MEMORY_ROOT` is configured and `persona/juana-manso.md` exists, that file is used as Juana's canonical persona; otherwise the package uses its built-in fallback.
 
-### Phoenix LLM Observability
+### LLM Observability
 
-Phoenix tracing is opt-in. When enabled, each public workflow is wrapped in a parent span: `workflow.generate-xray-tests`, `workflow.implement-xray-tests`, `workflow.generate-release-notes`, or `workflow.review-pull-request`. Internal workflow stages such as `workflow.context-extractor`, `workflow.test-implementation`, and LLM-backed task wrappers such as `task.summarizePullRequest` or `task.planXrayTests` nest under those parents. OpenAI/Anthropic SDK calls are instrumented separately with OpenInference `llm.*` spans. Phoenix can use the captured model and token usage attributes to calculate costs and roll them up by workflow, task, and project.
+OpenTelemetry tracing is opt-in and supports `phoenix` or `langfuse` through `OTEL_PROVIDER`. When enabled, each public workflow is wrapped in a parent span: `workflow.generate-xray-tests`, `workflow.implement-xray-tests`, `workflow.generate-release-notes`, or `workflow.review-pull-request`. Internal workflow stages such as `workflow.context-extractor`, `workflow.test-implementation`, and LLM-backed task wrappers such as `task.summarizePullRequest` or `task.planXrayTests` nest under those parents. OpenAI/Anthropic SDK calls are instrumented separately with OpenInference `llm.*` spans. Implementation agent spans also emit `llm.token_count.prompt`, `llm.token_count.completion`, cached input tokens, reasoning output tokens, model/provider, workflow issue, workflow phase, and Claude `llm.cost.total_usd` when available.
 
 ```env
-PHOENIX_ENABLED=true
-PHOENIX_PROJECT_NAME=manso-testing-agent
-PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
-PHOENIX_API_KEY=
-PHOENIX_BATCH=true
+OTEL_PROVIDER=phoenix
+OTEL_ENABLED=true
+OTEL_PROJECT_NAME=manso-testing-agent
+OTEL_ENDPOINT=http://localhost:6006
+OTEL_API_KEY=
+OTEL_SESSION_ID=
+OTEL_USER_ID=
+OTEL_BATCH=true
 ```
 
-For Phoenix Cloud, set `PHOENIX_COLLECTOR_ENDPOINT` to your Phoenix endpoint and set `PHOENIX_API_KEY`. For local development, start Phoenix locally and keep `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006`.
+For Phoenix Cloud, set `OTEL_ENDPOINT` to your Phoenix endpoint and set `OTEL_API_KEY`. For local development, start Phoenix locally and keep `OTEL_ENDPOINT=http://localhost:6006`.
+
+For Langfuse, switch the same shared variables and set the Langfuse keys:
+
+```env
+OTEL_PROVIDER=langfuse
+OTEL_ENABLED=true
+OTEL_PROJECT_NAME=manso-testing-agent
+OTEL_ENDPOINT=http://localhost:3000
+OTEL_PUBLIC_KEY=pk-lf-...
+OTEL_SECRET_KEY=sk-lf-...
+OTEL_SESSION_ID=
+OTEL_USER_ID=
+OTEL_BATCH=true
+```
+
+For local Langfuse, run `docker compose --profile langfuse up -d langfuse-web langfuse-worker` and use `OTEL_ENDPOINT=http://localhost:3000`. The compose stack bootstraps a local project with `OTEL_PUBLIC_KEY=pk-lf-local` and `OTEL_SECRET_KEY=sk-lf-local` unless you override those variables. `OTEL_ENDPOINT` can also be a Langfuse Cloud region host such as `https://cloud.langfuse.com` or `https://us.cloud.langfuse.com`, or a full OTLP endpoint ending in `/api/public/otel/v1/traces`.
+
+Langfuse Sessions are driven through span attributes. Each traced workflow automatically adds both `session.id` and `langfuse.session.id` to the root span and all nested spans. Issue-based workflows default to `jira:<ISSUE>`, and PR reviews default to `ado-pr:<organization>/<project>/<repository>/<pull-request-id>` unless `--ticket` is provided. Set `OTEL_SESSION_ID` to force several commands into the same shared session.
+
+Langfuse user consumption is attributed through `langfuse.user.id`. In Azure DevOps runs, the telemetry config first uses pipeline identity variables such as `BUILD_REQUESTEDFOREMAIL`. Outside Azure DevOps, set `OTEL_USER_ID` to a stable user or service account value.
 
 OpenInference stores prompt and response content by default. Set `OPENINFERENCE_HIDE_INPUTS=true` and/or `OPENINFERENCE_HIDE_OUTPUTS=true` when traces should retain token and cost metadata without storing prompt or response text.
+
+The workflow-level Codex span is enough for token and cost tracking. For full Codex internal traces, set `MANSO_CODEX_FORWARD_OTEL=true` to pass the selected backend endpoint through the Codex SDK config, or set `MANSO_CODEX_SDK_CONFIG` to a Codex SDK config JSON object for custom OTel settings.
 
 ### Xray Cloud
 
@@ -364,10 +397,15 @@ stringData:
   LLM_PROVIDER: openai
   LLM_API_KEY: your_llm_api_key
   LLM_MODEL: gpt-5.5
-  PHOENIX_ENABLED: "false"
-  PHOENIX_PROJECT_NAME: manso-testing-agent
-  PHOENIX_COLLECTOR_ENDPOINT: http://localhost:6006
-  PHOENIX_API_KEY: ""
+  OTEL_PROVIDER: phoenix
+  OTEL_ENABLED: "false"
+  OTEL_PROJECT_NAME: manso-testing-agent
+  OTEL_ENDPOINT: http://localhost:6006
+  OTEL_API_KEY: ""
+  OTEL_PUBLIC_KEY: ""
+  OTEL_SECRET_KEY: ""
+  OTEL_SESSION_ID: ""
+  OTEL_USER_ID: ""
   XRAY_BASE_URL: https://xray.cloud.getxray.app
   XRAY_CLIENT_ID: your_xray_client_id
   XRAY_CLIENT_SECRET: your_xray_client_secret
@@ -401,5 +439,6 @@ envFrom:
 - `src/workflows`: orchestration for each workflow step.
 - `src/integrations`: REST, GraphQL, and LLM adapters.
 - `src/output/<workflow>`: JSON/Markdown rendering and file writing per workflow.
+- `src/memory`: optional memory-cabin mirroring and persona loading.
 - `src/config`: runtime config and defaults.
 - `src/shared`: generic helpers with no product-specific dependencies.

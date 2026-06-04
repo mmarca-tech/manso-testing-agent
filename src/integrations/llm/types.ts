@@ -14,8 +14,27 @@ export interface PhoenixTelemetryConfig {
   projectName: string;
   url?: string;
   apiKey?: string;
+  sessionId?: string;
+  userId?: string;
   batch?: boolean;
 }
+
+export interface LangfuseTelemetryConfig {
+  enabled: boolean;
+  projectName: string;
+  url?: string;
+  publicKey: string;
+  secretKey: string;
+  sessionId?: string;
+  userId?: string;
+  batch?: boolean;
+}
+
+export type OpenTelemetryProvider = "phoenix" | "langfuse";
+
+export type ObservabilityTelemetryConfig =
+  | (PhoenixTelemetryConfig & { provider: "phoenix" })
+  | (LangfuseTelemetryConfig & { provider: "langfuse" });
 
 export interface LlmTextGenerationRequest {
   systemPrompt: string;
