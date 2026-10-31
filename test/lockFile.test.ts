@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, LockBusyError } from "../src/policy/lockFile.js";
 
-describe("acquireLock", () => {
+describe.sequential("acquireLock", () => {
   let dir: string;
   let path: string;
   beforeEach(async () => {
