@@ -72,7 +72,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           mkdir -p release
           node scripts/release.mjs align "$RELEASE_TAG" release/CHANGELOG.md
 
