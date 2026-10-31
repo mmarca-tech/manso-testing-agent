@@ -9,7 +9,13 @@ const script = fileURLToPath(new URL("../scripts/release.mjs", import.meta.url))
 let repo: string;
 let remote: string | undefined;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
-const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd: repo, encoding: "utf8" });
+const isolatedReleaseEnv = () => {
+  const env = { ...process.env };
+  delete env.GITHUB_REF;
+  delete env.GITHUB_SHA;
+  return env;
+};
+const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd: repo, encoding: "utf8", env: isolatedReleaseEnv() });
 const plan = () => {
   const result = run("plan");
   expect(result.status, result.stderr).toBe(0);
@@ -149,7 +155,7 @@ describe("immutable release tag publication", () => {
       const result = spawnSync(process.execPath, [script, "tag"], {
         cwd: repo,
         encoding: "utf8",
-        env: { ...process.env, GITHUB_REF: "refs/heads/feature" },
+        env: { ...isolatedReleaseEnv(), GITHUB_REF: "refs/heads/feature" },
       });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("only allowed on main");
@@ -161,7 +167,7 @@ describe("immutable release tag publication", () => {
       const result = spawnSync(process.execPath, [script, "tag"], {
         cwd: repo,
         encoding: "utf8",
-        env: { ...process.env, GITHUB_REF: "refs/heads/main", GITHUB_SHA: "not-head" },
+        env: { ...isolatedReleaseEnv(), GITHUB_REF: "refs/heads/main", GITHUB_SHA: "not-head" },
       });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Checkout does not match the pipeline source commit");
