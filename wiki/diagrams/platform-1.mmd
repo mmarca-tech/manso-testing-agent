@@ -1,0 +1,5 @@
+flowchart LR
+  RUN[manso run] --> SESS[session jira:KEY]
+  SESS --> SP[LLM spans]
+  SP --> EXP[OTLP exporter]
+  EXP -->|flush at exit| BACK[(Langfuse / Phoenix)]

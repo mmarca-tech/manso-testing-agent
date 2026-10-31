@@ -4,6 +4,7 @@ import type {
   Comment,
   ConfluencePage,
   Development,
+  FixVersion,
   Person,
   PullRequest,
   Ticket,
@@ -34,6 +35,11 @@ export function normalizeIssue(raw: unknown, requestedKey: string): NormalizedIs
   const title = firstString(issue, ["fields.summary", "summary", "title", "name", "fields.title"]) ?? key;
   const descriptionRaw = firstPresent(issue, ["fields.description", "description", "body", "fields.body"]);
   const url = normalizeUrl(issue);
+  const statusCategory = firstString(issue, ["fields.status.statusCategory.key", "status.statusCategory.key"]);
+  const resolution = firstString(issue, ["fields.resolution.name", "resolution.name"]);
+  const fixVersions = normalizeFixVersions(firstPresent(issue, ["fields.fixVersions", "fixVersions"]));
+  const affectedServices = normalizeAffectedServices(raw, issue, fields);
+  const completedAt = normalizeCompletedAt(raw, issue, fields);
 
   const ticket: Ticket = {
     key,
@@ -56,6 +62,11 @@ export function normalizeIssue(raw: unknown, requestedKey: string): NormalizedIs
     ...(optionalString(firstString(issue, ["fields.status.name", "status.name", "status", "state"])) ?? false
       ? { status: firstString(issue, ["fields.status.name", "status.name", "status", "state"]) }
       : {}),
+    ...(statusCategory ? { statusCategory } : {}),
+    ...(resolution ? { resolution } : {}),
+    ...(fixVersions.length > 0 ? { fixVersions } : {}),
+    ...(completedAt ? { completedAt } : {}),
+    ...(affectedServices.length > 0 ? { affectedServices } : {}),
     ...(normalizePerson(firstPresent(issue, ["fields.assignee", "assignee"]))
       ? { assignee: normalizePerson(firstPresent(issue, ["fields.assignee", "assignee"])) }
       : {}),
@@ -127,6 +138,9 @@ export function normalizeAttachments(raw: unknown): Attachment[] {
 }
 
 export function normalizeLinkedIssues(raw: unknown, currentIssueKey?: string): TicketLink[] {
+  const parentLinks = normalizeParentLink(raw, currentIssueKey);
+  const subtaskLinks = normalizeSubtaskLinks(raw, currentIssueKey);
+
   const linkContainers = compactCandidates([
     firstPresent(raw, ["fields.issuelinks"]),
     firstPresent(raw, ["issuelinks"]),
@@ -139,14 +153,40 @@ export function normalizeLinkedIssues(raw: unknown, currentIssueKey?: string): T
   const linksFromIssueLinks = linkContainers.flatMap((link) => normalizeIssueLinkContainer(link, currentIssueKey));
 
   const linksFromObjects =
-    linksFromIssueLinks.length > 0
+    linksFromIssueLinks.length > 0 || parentLinks.length > 0 || subtaskLinks.length > 0
       ? []
       : collectObjects(raw, (record) => {
           const key = firstString(record, ["key", "issueKey", "displayId", "fields.key"]);
           return Boolean(key && key !== currentIssueKey && looksLikeJiraKey(key));
         }).map((record) => normalizeIssueRecordAsLink(record, "unknown"));
 
-  return uniqueBy([...linksFromIssueLinks, ...linksFromObjects], (link) => link.issueKey ?? link.url);
+  // Parent/subtasks first so their labelled relationship wins de-duplication.
+  return uniqueBy(
+    [...parentLinks, ...subtaskLinks, ...linksFromIssueLinks, ...linksFromObjects],
+    (link) => link.issueKey ?? link.url,
+  );
+}
+
+function normalizeParentLink(raw: unknown, currentIssueKey?: string): TicketLink[] {
+  const parent = firstPresent(raw, ["fields.parent", "parent"]);
+  if (!isRecord(parent)) {
+    return [];
+  }
+  const relationship = /epic/i.test(firstString(parent, ["fields.issuetype.name", "issuetype.name", "issueType"]) ?? "")
+    ? "epic"
+    : "parent";
+  const link = normalizeIssueRecordAsLink(parent, "outward", relationship);
+  if (!link.issueKey || link.issueKey === currentIssueKey || !looksLikeJiraKey(link.issueKey)) {
+    return [];
+  }
+  return [link];
+}
+
+function normalizeSubtaskLinks(raw: unknown, currentIssueKey?: string): TicketLink[] {
+  return asArray(firstPresent(raw, ["fields.subtasks", "subtasks"]))
+    .filter(isRecord)
+    .map((subtask) => normalizeIssueRecordAsLink(subtask, "inward", "subtask"))
+    .filter((link) => Boolean(link.issueKey) && link.issueKey !== currentIssueKey && looksLikeJiraKey(link.issueKey ?? ""));
 }
 
 export function normalizeDevelopment(raw: unknown): Development {
@@ -463,6 +503,70 @@ function normalizeConfluencePage(record: unknown): ConfluencePage | undefined {
       : {}),
     ...(body ? { body } : {}),
   };
+}
+
+function normalizeFixVersions(value: unknown): FixVersion[] {
+  const versions: FixVersion[] = [];
+  for (const item of asArray(value)) {
+    if (!isRecord(item)) continue;
+    const name = firstString(item, ["name"]);
+    if (!name) continue;
+    const releaseDate = firstString(item, ["releaseDate"]);
+    versions.push({
+      name,
+      ...(typeof item.released === "boolean" ? { released: item.released } : {}),
+      ...(releaseDate ? { releaseDate } : {}),
+    });
+  }
+  return versions;
+}
+
+/** Matches the display name of the Jira Service Management "Affected services" field. */
+const AFFECTED_SERVICES_FIELD_NAME = /^affected services?$/i;
+/** Matches the JSM change "Change completion date" field: when the deployment actually finished. */
+const CHANGE_COMPLETION_FIELD_NAME = /^change completion date$/i;
+
+/**
+ * Custom-field ids differ per Jira site, so fields are located by display name
+ * through the `names` map that `expand=names` returns.
+ */
+function fieldIdsByName(raw: unknown, issue: UnknownIssueRecord, pattern: RegExp): string[] {
+  const names = isRecord(issue.names) ? issue.names : getPath(raw, "names");
+  if (!isRecord(names)) {
+    return [];
+  }
+  return Object.entries(names)
+    .filter(([, fieldName]) => typeof fieldName === "string" && pattern.test(fieldName.trim()))
+    .map(([fieldId]) => fieldId);
+}
+
+/**
+ * Read the "Affected services" custom field. Jira Cloud returns its values as
+ * id-only service refs; the display names are only in `renderedFields` (which
+ * `expand=renderedFields` already fetches). Values with no name anywhere are
+ * dropped rather than shown as opaque ids.
+ */
+function normalizeAffectedServices(raw: unknown, issue: UnknownIssueRecord, fields: Record<string, unknown>): string[] {
+  const rendered = isRecord(issue.renderedFields) ? issue.renderedFields : getPath(raw, "renderedFields");
+  const services: string[] = [];
+  for (const fieldId of fieldIdsByName(raw, issue, AFFECTED_SERVICES_FIELD_NAME)) {
+    services.push(...toStringArray(fields[fieldId]));
+    if (isRecord(rendered)) services.push(...toStringArray(rendered[fieldId]));
+  }
+  return [...new Set(services)];
+}
+
+/**
+ * When the change was actually completed: "Change completion date", else the
+ * resolution date. Kept as Jira returns it (site-local offset), not converted
+ * to UTC, so its `YYYY-MM-DD` prefix is the local day the team would name.
+ */
+function normalizeCompletedAt(raw: unknown, issue: UnknownIssueRecord, fields: Record<string, unknown>): string | undefined {
+  for (const fieldId of fieldIdsByName(raw, issue, CHANGE_COMPLETION_FIELD_NAME)) {
+    const value = fields[fieldId];
+    if (isNonEmptyString(value)) return value.trim();
+  }
+  return isNonEmptyString(fields.resolutiondate) ? fields.resolutiondate.trim() : undefined;
 }
 
 function normalizePerson(value: unknown): Person | undefined {

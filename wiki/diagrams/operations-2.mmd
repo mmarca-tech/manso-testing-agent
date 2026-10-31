@@ -1,0 +1,10 @@
+flowchart LR
+  JR[Jira rule · Send web request] -->|POST runs| ADO[Azure Pipelines REST]
+  ADO --> RUN[run-hosted.yml]
+  RUN --> CLONE[clone target repo · host-aware auth]
+  CLONE --> STEP{mode}
+  STEP -->|design| D[design-tests]
+  STEP -->|implement| I[implement-tests --issue]
+  STEP -->|both| DI[design → implement]
+  STEP -->|coverage| C[analyse-coverage]
+  D & I & DI & C --> ART[publish out/ artifact]

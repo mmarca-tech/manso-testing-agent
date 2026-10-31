@@ -1,0 +1,73 @@
+name: Manso CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - docs/**
+      - README.md
+      - TESTING.md
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - docs/**
+      - README.md
+      - TESTING.md
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate-and-publish-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Evaluate golden cases
+        run: |
+          if find eval/cases -type f -name '*.json' ! -name '*.reference.json' -print -quit | grep -q .; then
+            npm run build
+            node dist/cli/main.js eval --cases eval/cases
+          else
+            echo "::notice::No TestDesignPack JSON files are checked into eval/cases; skipping golden-case evaluation."
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish main image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ghcr.io/mmarca-tech/manso-testing-agent:main
+            ghcr.io/mmarca-tech/manso-testing-agent:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/mmarca-tech/manso-testing-agent

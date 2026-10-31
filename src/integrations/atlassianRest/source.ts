@@ -12,7 +12,7 @@ import type {
 } from "../../domain/contextPack/schema.js";
 import type { NormalizedIssue } from "../../domain/tickets/normalizedIssue.js";
 import { asArray, firstPresent, firstString, isRecord, toIsoString, uniqueBy, unknownToText } from "../../shared/utils.js";
-import type { TicketSource } from "../../workflows/ticket-context/ticketSource.js";
+import type { AttachmentContent, TicketSource } from "../../workflows/ticket-context/ticketSource.js";
 import { normalizeAttachments, normalizeComments, normalizeIssue, normalizeLinkedIssues } from "../atlassian/normalizers.js";
 import type { AtlassianRestClient } from "./client.js";
 
@@ -130,6 +130,18 @@ export class AtlassianRestSource implements TicketSource {
     }
 
     return uniqueBy(hydratedPages, (page) => page.url ?? page.id ?? page.title);
+  }
+
+  async fetchAttachmentContent(attachment: Attachment): Promise<AttachmentContent | undefined> {
+    if (!attachment.url) {
+      return undefined;
+    }
+    const result = await this.callRest("fetchAttachmentContent", "jira-rest:attachment-content", () =>
+      this.client.getBinary("jira", attachment.url!),
+    );
+    const downloaded = result as { data: Uint8Array; contentType?: string };
+    const mimeType = downloaded.contentType ?? attachment.mimeType;
+    return { data: downloaded.data, ...(mimeType ? { mimeType } : {}) };
   }
 
   getProvenance(): ToolProvenance[] {

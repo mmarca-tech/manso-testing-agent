@@ -1,0 +1,14 @@
+node_modules
+dist
+out
+.sandbox
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.claude
+.idea
+docs/diagrams/*.png
+test
+**/*.test.ts

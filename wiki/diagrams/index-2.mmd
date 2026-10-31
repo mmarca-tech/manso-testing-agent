@@ -1,0 +1,12 @@
+flowchart LR
+  J[Jira story] --> RES[Researcher]
+  RES --> CP[(ContextPack)]
+  CP --> AC[AC extraction] --> GH[Gherkin authoring] --> GATE{AC coverage gate}
+  GATE -->|covered| TDP[(TestDesignPack)]
+  TDP --> XR[["Xray Cucumber tests<br/>linked is tested by"]]
+  TDP --> IMP[Implementer · code agent]
+  IMP --> VER{verify} -->|fail| HEAL[Healer] --> VER
+  VER -->|done| PR[[Pull request]]
+  PR --> CMT["@manso comment"] --> RESP[Responder]
+  RESP --> FIX[scoped fix + reply]
+  RESP --> LRN[Learning Engine] --> PROP[[Guideline PR]]

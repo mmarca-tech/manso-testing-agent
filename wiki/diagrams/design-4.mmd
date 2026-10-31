@@ -1,0 +1,9 @@
+flowchart LR
+  CM[Jira createmeta] --> REQ[required field ids]
+  REQ --> READ[read values from story]
+  READ --> PRIM{primitive?}
+  PRIM -->|yes| USE[inherit value]
+  PRIM -->|no, structured| WARN[warn → use override]
+  CFG[.agents xray.testFields] --> OV[override wins]
+  USE --> MERGE[extra fields]
+  OV --> MERGE --> CREATE[createTest]

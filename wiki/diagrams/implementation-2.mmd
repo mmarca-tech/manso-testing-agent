@@ -1,0 +1,9 @@
+flowchart LR
+  TDP[(TestDesignPack)] --> IMP[Implementer]
+  SKILL[binding skill: playwright-bdd-ts / dotnet-reqnroll] -.-> IMP
+  GUIDE[.agents guidance + AGENTS.md] -.-> IMP
+  IMP --> CH[changed files]
+  CH --> VER{verify}
+  VER -->|"exit != 0"| HEAL[Healer · scoped fix] --> VER
+  VER -->|done| COMMIT[commit on branch]
+  COMMIT --> PUSH[token-auth push] --> PRR[VcsAdapter.raisePullRequest]

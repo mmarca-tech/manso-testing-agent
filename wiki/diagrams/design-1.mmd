@@ -1,0 +1,10 @@
+flowchart TB
+  US["<b>User Story (Jira)</b><br/>• description<br/>• comments<br/>• development info<br/>• linked tickets<br/>• Confluence pages<br/>• Figma"]
+  REPO["<b>Repository</b><br/>• existing tests<br/>• existing test steps"]
+  MCP["Figma MCP · Rovo MCP"]
+  LLM["<b>LLM</b><br/>• generate test cases<br/>• create test-case tickets<br/>• link tests to the user story"]
+  US -. "development info → resolve repo" .-> REPO
+  US --> LLM
+  REPO --> LLM
+  MCP --> LLM
+  LLM -. "links tests back to" .-> US

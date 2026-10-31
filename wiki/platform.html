@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Governance &amp; Platform — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>Governance</h4>
+    <a href="#budget">Cost budgets</a>
+    <a href="#audit">Audit log</a>
+    <a href="#redaction">Secret redaction</a>
+    <a href="#sandbox">Sandbox profiles</a>
+    <a href="#gates">Human-review gates</a>
+    <h4>Platform</h4>
+    <a href="#observability">Observability</a>
+    <a href="#skills">Skills (SKILL.md)</a>
+    <a href="#mcp">MCP ecosystem</a>
+    <a href="#config">Configuration</a>
+    <a href="#eval">Eval harness</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>Governance &amp; Platform</h1>
+      <p class="lead">The cross-cutting machinery that makes Manso safe to run unattended — budgets, audit,
+      redaction, sandboxing, gates — plus observability, the skills system, MCP, configuration, and evaluation.</p>
+    </div>
+
+    <section id="budget">
+      <h2>Cost budgets</h2>
+      <p>LLM and code-agent runs cost money, and an autonomous loop could run away. Both <code>design-tests</code> and
+      <code>implement-tests</code> record each run's spend to an append-only <strong>cost ledger</strong>, then
+      <code>checkBudget</code> enforces per-run and per-day caps — warning and emitting a <code>budget.breached</code>
+      audit entry on a breach.</p>
+      <p>Cost comes from a configurable <strong>model price table</strong> (<code>modelPrices.ts</code>, overridable via
+      <code>MANSO_MODEL_PRICES</code>) through a <strong>cache-aware estimator</strong>: an exact SDK-reported cost
+      wins, otherwise tokens × price with cached input billed at the cached rate. This closes two blind spots — the
+      Codex SDK (reports tokens, no dollar cost) and the <strong>design phase</strong> (the text clients accumulate
+      token usage). Unknown models log token totals with a hint rather than silently costing 0.</p>
+      <div class="stack"><span class="badge">budget.ts · costLedger.ts · modelPrices.ts</span><span class="badge grey">maxCostPerRunUsd / maxCostPerDayUsd</span><span class="badge grey">MANSO_MODEL_PRICES</span></div>
+    </section>
+
+    <section id="audit">
+      <h2>Append-only audit log</h2>
+      <p>Every consequential action is recorded to a JSONL <strong>audit log</strong> (<code>run.started</code>,
+      <code>design.created</code>, <code>xray.uploaded</code>, <code>pr.raised</code>,
+      <code>rule.proposed</code>, <code>budget.breached</code>, <code>run.completed</code>). The
+      <code>manso audit</code> verb reads it back, filterable by action/target. Entries are redacted before they
+      are written.</p>
+      <div class="stack"><span class="badge">auditLog.ts</span><span class="badge grey">emitAudit (fire-and-forget) · manso audit</span></div>
+    </section>
+
+    <section id="redaction">
+      <h2>Secret redaction</h2>
+      <p>Before anything reaches logs, telemetry, or the audit file, the Policy Engine scrubs secrets — built-in
+      patterns (tokens, keys) plus any repo-defined <code>policy.redactPatterns</code>. This keeps credentials out of
+      Langfuse traces and the audit log even when they appear in tool output.</p>
+      <div class="stack"><span class="badge">redaction.ts</span><span class="badge grey">built-in + policy.redactPatterns</span></div>
+    </section>
+
+    <section id="sandbox">
+      <h2>Sandbox profiles</h2>
+      <p>The code agent runs behind a <code>Sandbox</code> seam that maps a profile to the SDK's permission settings —
+      <code>read-only</code>, <code>workspace-write</code>, or <code>danger-full-access</code> (selected via
+      <code>MANSO_SANDBOX</code>). In a container, full access is acceptable because the container <em>is</em> the
+      isolation boundary; locally you can tighten it.</p>
+      <div class="stack"><span class="badge">sandbox.ts</span><span class="badge grey">MANSO_SANDBOX</span></div>
+    </section>
+
+    <section id="gates">
+      <h2>Human-review gates</h2>
+      <p>Two gates keep a human in control when wanted: <code>humanReviewBeforeUpload</code> (don't push to Xray
+      without explicit <code>--yes</code>) and <code>humanReviewBeforePr</code> (prepare the branch but don't open the
+      PR). Setting them to <code>false</code> grants standing approval for unattended pipeline runs.</p>
+      <div class="stack"><span class="badge grey">policy.gates.humanReviewBeforeUpload / humanReviewBeforePr</span></div>
+    </section>
+
+    <section id="observability">
+      <h2>Observability — OpenTelemetry → Langfuse / Phoenix</h2>
+      <p>Every LLM call is wrapped in an OpenTelemetry span and grouped under <strong>one session per ticket</strong>
+      (<code>jira:&lt;KEY&gt;</code>). Spans export to <strong>Langfuse</strong> or <strong>Arize Phoenix</strong>,
+      flushed at process exit so short-lived CLI runs don't lose traces. Lightweight verbs never load the OTel stack
+      unless telemetry is active. The <strong>agentic phases</strong> — implement, heal, and <code>respond-to-pr</code>
+      fixes (Claude/Codex SDK) — are traced too, emitted as <strong>generations</strong> with token usage and an
+      <strong>exact-or-estimated cost</strong> (<code>cost_details</code>) including the cached-input / reasoning-token
+      split, so the whole pipeline — not just design — shows up in Langfuse with sane cost.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge alt">OpenTelemetry</span><span class="badge alt">Langfuse</span><span class="badge alt">Arize Phoenix</span><span class="badge grey">OTEL_PROVIDER / OTEL_ENDPOINT / keys</span></div>
+      <div class="note"><strong>Why the explicit cost</strong>Manso sends a computed <code>cost_details</code> on the
+      span (exact SDK cost, else the cache-aware estimate from its own price table) rather than relying on Langfuse's
+      tokens × model-price inference — which can't see the cached-input split and previously over-stated a
+      cache-heavy Codex run ~4×.</div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/platform-1.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="skills">
+      <h2>Skills — SKILL.md with progressive disclosure</h2>
+      <p>Domain know-how lives in <strong>SKILL.md</strong> files with YAML front-matter (<code>name</code>,
+      <code>description</code>, <code>appliesTo {stacks, phase}</code>, <code>when</code>). The loader filters skills
+      by <code>{stack, phase}</code> and resolves them with <strong>repo overrides winning over packaged</strong> —
+      a repo's <code>.agents/skills/&lt;name&gt;</code> replaces the built-in. This is how Gherkin conventions,
+      AC-extraction guidance, and stack binding rules are injected into prompts.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">skillLoader (hand-rolled parser)</span><span class="badge grey">packaged skills/ + repo .agents/skills/</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/platform-2.png" alt="diagram" loading="lazy" />
+        <div class="cap">Repo overrides win; skills are progressively disclosed by phase/stack.</div>
+      </div>
+    </section>
+
+    <section id="mcp">
+      <h2>MCP tool ecosystem</h2>
+      <p>The Model Context Protocol lets the code agent use external tools. <code>mcpServers</code> in the
+      <code>.agents</code> config are typed (stdio/http/sse), have <code>${ENV_VAR}</code> placeholders expanded from
+      the environment — <strong>secrets stay in env, never in the committed config</strong> — and are passed to the
+      agent SDK. Packaged skills exist for Playwright exploration, selector strategy, Figma spec extraction, visual
+      regression and accessibility.</p>
+      <div class="stack"><span class="badge">mcp/config.ts</span><span class="badge grey">stdio · http · sse · ${ENV} expansion</span></div>
+    </section>
+
+    <section id="config">
+      <h2>Configuration</h2>
+      <p>Two layers: <strong>runtime config</strong> (env + optional JSON) holds secrets and connection details
+      (Jira/Xray/VCS/LLM/OTel), while the per-repo <strong><code>.agents/manso.config.json</code></strong> holds
+      project knobs (product, output mode, stacks, providers, MCP servers, <code>xray.testFields</code>, policy gates,
+      budgets, PR mention). The <code>.agents/</code> folder also carries guidance docs and skill overrides.</p>
+      <div class="stack"><span class="badge">runtimeConfig.ts</span><span class="badge">agentConfig.ts (Zod)</span><span class="badge grey">.agents/ (with legacy .agent fallback)</span></div>
+    </section>
+
+    <section id="eval">
+      <h2>Eval harness</h2>
+      <p>The <code>eval</code> verb scores generated designs against golden cases — quality scoring against the
+      coverage SLO — so a release can be gated on benchmark quality before it ships. It's the regression net for the
+      agent's own output quality.</p>
+      <div class="stack"><span class="badge">eval/harness.ts · scorer.ts</span><span class="badge grey">golden cases · release gate</span></div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · Governance &amp; Platform.</footer>
+</body>
+</html>

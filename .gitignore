@@ -1,9 +1,14 @@
 node_modules/
 dist/
 out/
+.sandbox/
 
 .env
 .env.*
 !.env.example
 
-extractor.config.local.json
+manso.config.local.json
+
+.idea/
+.claude/
+.cursor/

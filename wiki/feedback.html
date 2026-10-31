@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PR Feedback &amp; Learning — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>PR Feedback Loop</h4>
+    <a href="#overview">Overview</a>
+    <a href="#mentions">Mentions &amp; intent</a>
+    <a href="#fix">Scoped fixes</a>
+    <a href="#loopsafety">Loop safety</a>
+    <h4>Learning</h4>
+    <a href="#learning">Learning engine</a>
+    <a href="#triggers">Knowledge-update triggers</a>
+    <a href="#proposal">Guideline-proposal PRs</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>PR Feedback &amp; Learning</h1>
+      <p class="lead">Manso listens to pull-request comments, applies scoped fixes, and turns durable corrections
+      into reviewable guideline changes — so the agent improves with use instead of repeating mistakes.</p>
+    </div>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>The <code>respond-to-pr</code> verb reads a PR's comment threads, finds the latest unanswered comment that
+      addresses <strong>@manso</strong>, classifies its intent, and either applies a small, feedback-scoped fix
+      (re-verifying and replying with the result) or posts a reply. Triggered by an Azure DevOps service hook or a
+      GitHub webhook → pipeline, it closes the human-in-the-loop cycle.</p>
+      <div class="stack">
+        <span class="badge">Responder</span><span class="badge">intent classifier</span>
+        <span class="badge alt">VcsAdapter comment I/O</span><span class="badge alt">code agent (fix)</span>
+        <span class="badge grey">loop-safety guards</span>
+      </div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/feedback-1.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="mentions">
+      <h2>Mentions &amp; intent classification</h2>
+      <p>The Responder parses each thread's latest comment for the configured mention handle
+      (<code>pr.mention</code>, default <code>@manso</code>) and classifies the intent — a fix request, a
+      question, or a knowledge-update directive. Classification decides whether the code agent runs or a reply
+      suffices.</p>
+      <div class="stack"><span class="badge">mention.ts</span><span class="badge">classifyIntent</span></div>
+    </section>
+
+    <section id="fix">
+      <h2>Feedback-scoped fixes</h2>
+      <p>When a comment asks for a change, the Responder runs the code agent with a <strong>narrow</strong> prompt
+      built from that feedback (not a full re-implementation), re-runs the verify command, and replies in-thread with
+      the outcome. MCP tools and the same sandbox profile apply as in implementation.</p>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>Build a fix prompt scoped to the thread's instruction.</li>
+        <li>Run the agent; detect changed files.</li>
+        <li>Re-verify; reply with the verify result (and what changed).</li>
+      </ol>
+    </section>
+
+    <section id="loopsafety">
+      <h2>Loop safety</h2>
+      <p>An agent that answers its own comments would loop forever. The Responder is guarded: it <strong>never acts
+      on its own (marker-tagged) comments</strong>, skips threads whose latest comment is already a Manso reply,
+      and stops at a PR-wide iteration budget (<code>pr.maxIterationsPerPr</code>).</p>
+      <div class="stack"><span class="badge grey">marker tags · answered-thread skip · iteration budget</span></div>
+    </section>
+
+    <section id="learning">
+      <h2>Learning engine</h2>
+      <p>Corrections shouldn't be one-offs. The Learning Engine <strong>classifies</strong> a signal (PR feedback,
+      heal failure, verify failure) as <em>transient</em> or <em>systemic</em>, and records a
+      <code>LearningRecord</code>. Systemic learnings become proposed guideline edits — but are <strong>never applied
+      silently</strong>; they always go through a separate, human-reviewed pull request.</p>
+      <div class="stack"><span class="badge">learningEngine</span><span class="badge">classify</span><span class="badge">Zod LearningRecordSet</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/feedback-2.png" alt="diagram" loading="lazy" />
+        <div class="cap">Learning is proposed, reviewed, and merged — not auto-applied.</div>
+      </div>
+    </section>
+
+    <section id="triggers">
+      <h2>Knowledge-update triggers</h2>
+      <p>Two explicit PR-comment handles let a reviewer turn a correction into a durable rule:</p>
+      <table>
+        <tr><th>Handle</th><th>Scope</th><th>Targets</th></tr>
+        <tr><td><code>@update-knowledge &lt;rule&gt;</code></td><td>project</td><td>This repo's <code>.agents/guidelines/</code></td></tr>
+        <tr><td><code>@update-agent &lt;rule&gt;</code></td><td>agent</td><td>The Manso repo's <code>proposed-guidelines/</code> (via <code>MANSO_AGENT_REPO</code>)</td></tr>
+      </table>
+      <p>Both only ever <strong>propose</strong> via a review PR — the reviewer's text is untrusted and is never
+      applied automatically.</p>
+      <div class="stack"><span class="badge">knowledgeUpdate.ts</span><span class="badge grey">@update-knowledge · @update-agent</span></div>
+    </section>
+
+    <section id="proposal">
+      <h2>Guideline-proposal PRs</h2>
+      <p>The proposer writes the new rule into the appropriate <code>guidelines/*.md</code>, commits it on a dedicated
+      branch, and raises a PR through the same <code>VcsAdapter</code> (so it works on Azure or GitHub, with
+      token-based push). The PR description cites the source learnings, making the behaviour change auditable before
+      it ever influences future test generation.</p>
+      <div class="stack"><span class="badge">proposer.ts</span><span class="badge alt">VcsAdapter PR</span><span class="badge grey">idempotent · human-reviewed</span></div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · PR Feedback &amp; Learning.</footer>
+</body>
+</html>

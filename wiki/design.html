@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Test Design &amp; Xray — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>Test Design Engine</h4>
+    <a href="#overview">Overview</a>
+    <a href="#ac">AC extraction</a>
+    <a href="#gherkin">Gherkin authoring</a>
+    <a href="#gate">Coverage gate</a>
+    <a href="#beyond-acs">Beyond ACs (M22)</a>
+    <a href="#modes">Output modes</a>
+    <a href="#reuse">Step reuse</a>
+    <a href="#datatables">Data tables</a>
+    <h4>Xray Integration</h4>
+    <a href="#xray">Cucumber &amp; Manual upload</a>
+    <a href="#linktype">Link relationship</a>
+    <a href="#fields">Mandatory fields</a>
+    <h4>Coverage</h4>
+    <a href="#coverage-gap">Coverage gap analysis</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>Test Design &amp; Xray</h1>
+      <p class="lead">From a ContextPack to acceptance-criteria-traced Gherkin scenarios, gated for coverage and
+      uploaded to Xray as linked Cucumber tests — plus a coverage-gap analyser for existing tickets.</p>
+    </div>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>The Test Design Engine is a chain of sub-agents driven by the <code>design-tests</code> verb:
+      <strong>Researcher → Test Architect → Coverage Auditor → Xray sink</strong>. It produces a Zod-validated
+      <code>TestDesignPack</code> (scenarios, AC coverage matrix, risk ranking, open questions, provenance) and
+      <code>.feature</code> files, then optionally pushes the scenarios to Xray.</p>
+      <div class="stack">
+        <span class="badge">Test Architect</span><span class="badge">Coverage Auditor</span>
+        <span class="badge">Zod TestDesignPack</span><span class="badge alt">OpenAI / Azure OpenAI</span>
+        <span class="badge alt">Xray GraphQL</span><span class="badge grey">Skills (gherkin-authoring)</span>
+      </div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/design-1.png" alt="diagram" loading="lazy" />
+        <div class="cap">Concept: the story and the repo's existing tests/steps feed the LLM, which generates, creates and links the Xray tests (Figma/Rovo MCP supply extra context).</div>
+      </div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/design-2.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="ac">
+      <h2>Acceptance-criteria extraction</h2>
+      <p>The first LLM pass reads the story (description, comments, evidence) and extracts a structured list of
+      <strong>acceptance criteria</strong> — each with an id and text. These ids become the backbone of coverage:
+      every scenario references the AC ids it verifies, and the Coverage Auditor checks that none are orphaned.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">acExtraction.ts</span><span class="badge alt">LLM (JSON mode)</span><span class="badge grey">acceptance-criteria-extraction skill</span></div>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>The skill body + the ContextPack form the prompt.</li>
+        <li>The model returns a JSON array validated against <code>AcArraySchema</code>.</li>
+        <li>The ACs enrich the ContextPack and feed the Gherkin author + the coverage matrix.</li>
+      </ol>
+    </section>
+
+    <section id="gherkin">
+      <h2>Gherkin authoring</h2>
+      <p>The Test Architect turns ACs + evidence into <strong>Gherkin scenarios</strong> in business language. Each
+      scenario carries structured fields — title, feature, tags, the AC ids it covers, risk, readiness, objective,
+      preconditions, steps (Given/When/Then), source evidence, and a rationale — not just free text. Authoring is
+      steered by the packaged <code>gherkin-authoring</code> <strong>skill</strong> (a SKILL.md the repo can override).</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">testArchitect</span><span class="badge">GherkinScenario (Zod)</span><span class="badge grey">skill: gherkin-authoring</span></div>
+    </section>
+
+    <section id="gate">
+      <h2>Coverage gate</h2>
+      <p>The <strong>Coverage Auditor</strong> enforces the SLO that <em>every acceptance criterion has at least one
+      scenario</em>. On gaps it either fails the run (gate <code>required</code>) or records
+      <code>openQuestions</code> (gate <code>warn</code>), and can trigger a bounded second design pass scoped only
+      to the uncovered ACs (≤ 2 retries).</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">coverageAuditor</span><span class="badge grey">policy.gates.acCoverage: required | warn | off</span></div>
+      <div class="note"><strong>Why a gate</strong>It converts "the LLM probably covered everything" into a checkable
+      invariant — the acCoverageMatrix must map every AC id to ≥ 1 scenario index.</div>
+    </section>
+
+    <section id="beyond-acs">
+      <h2>Beyond the ACs — derived requirements &amp; risk/edge coverage (M22)</h2>
+      <p>The acceptance criteria are the <em>stated</em> contract, not the whole requirement — and the AC gate only
+      measures that floor. M22 closes the gap so exploratory coverage is <strong>measured, not hoped for</strong>:</p>
+      <ul>
+        <li><strong>Derived-requirement extraction</strong> — a pass that mines the full context for implied behaviours
+        the ACs don't state (error, boundary, security, data, state). Each <code>DerivedRequirement</code> carries a
+        <code>category</code>, <code>risk</code>, and <code>sourceEvidence</code>, and is kept <em>separate</em> from
+        the ACs so the product contract stays honest. The author then covers them too (scenario <code>drIds</code>).</li>
+        <li><strong>Risk/edge coverage gate</strong> — every <em>high-risk</em> AC or derived requirement must have at
+        least one <strong>negative</strong> or <strong>boundary</strong> scenario (a structured scenario
+        <code>polarity</code>, not a tag); an uncovered derived requirement is itself a gap. Surfaced in the
+        <code>riskCoverageMatrix</code>.</li>
+        <li><strong>Adversarial critique</strong> — one bounded "what did this design miss?" pass that folds in
+        genuinely-missing scenarios (no duplicates) and records the rest as gaps / open questions.</li>
+      </ul>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">derivedRequirements.ts</span><span class="badge">critique.ts</span><span class="badge">coverageAuditor</span><span class="badge grey">policy.gates.riskCoverage: required | warn | off (default warn)</span><span class="badge grey">policy.design.deriveRequirements · adversarialCritique</span></div>
+      <div class="note ok"><strong>Safe by default</strong>The risk gate defaults to <code>warn</code> and the extra
+      passes are resilient (warn + skip on failure) and budget-bounded — they enrich coverage without blocking a run.</div>
+    </section>
+
+    <section id="modes">
+      <h2>Output modes: Gherkin or plain-English</h2>
+      <p>Not every team automates everything. <code>testDesign.outputMode</code> selects one of two modes:
+      <strong>gherkin</strong> (Given/When/Then → uploaded as Xray <strong>Cucumber</strong> tests) or
+      <strong>plain-english</strong> (manual test cases with action/expected-result steps → uploaded as Xray
+      <strong>Manual</strong> tests). <strong>Gherkin is always the default</strong>; you opt into manual tests
+      explicitly. The same structured fields (coverage, risk, tags) apply uniformly, so coverage and ranking work
+      regardless of mode.</p>
+      <div class="stack"><span class="badge">GherkinScenario</span><span class="badge">PlainEnglishScenario</span><span class="badge grey">discriminated union on <code>kind</code></span></div>
+    </section>
+
+    <section id="reuse">
+      <h2>Step reuse from the repo</h2>
+      <p>To avoid inventing near-duplicate steps that would need new step definitions, the author is fed the
+      repository's <strong>existing step vocabulary</strong>. <code>extractStepLibrary</code> scans the target repo's
+      <code>.feature</code> files, normalizes step phrasings, and surfaces them (and the existing scenario titles)
+      so the LLM reuses what's already implemented.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">stepLibrary.ts</span><span class="badge grey">--repo · normalize · dedup</span></div>
+      <p>The same inventory powers <strong>de-duplication</strong>: scenarios whose title already exists in the repo
+      aren't re-created.</p>
+    </section>
+
+    <section id="datatables">
+      <h2>Gherkin data tables</h2>
+      <p>List-style assertions ("the table shows these columns…") belong in a Gherkin <strong>data table</strong>,
+      not a pile of <code>And</code> steps. The <code>GherkinStep</code> schema supports an optional
+      <code>dataTable</code> (rows of non-empty cells), and both the renderer and the reverse parser handle it — so
+      designs round-trip cleanly to and from Xray.</p>
+      <div class="stack"><span class="badge">dataTable: string[][]</span><span class="badge grey">render ↔ parse</span></div>
+    </section>
+
+    <section id="xray">
+      <h2>Xray: Cucumber &amp; Manual upload</h2>
+      <p>With <code>--yes</code> (or the standing <code>humanReviewBeforeUpload=false</code> gate), the Xray sink
+      creates one test per scenario via Xray Cloud's GraphQL <code>createTest</code> mutation, labels it, and links it
+      to the source story. The test type follows the scenario kind: a Gherkin scenario becomes a
+      <strong>Cucumber</strong> test (its <code>gherkin</code> body), and a plain-English scenario becomes a
+      <strong>Manual</strong> test (its action/expected-result pairs map to manual <code>steps[]</code>). It is
+      <strong>idempotent by normalized title</strong> (<code>normalizeTestTitle</code> —
+      case/punctuation/unicode-insensitive): a scenario is skipped when it matches an already-linked test <em>or</em>
+      another scenario in the same run, so a reworded title can't slip a near-duplicate past an exact-match check.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge alt">Xray Cloud GraphQL</span><span class="badge">testDesignSink.ts</span><span class="badge grey">createTest · Cucumber + Manual</span><span class="badge grey">XRAY_CLIENT_ID / SECRET</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/design-3.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="linktype">
+      <h2>Link-relationship resolution</h2>
+      <p>A test should appear on the story as <strong>"is tested by"</strong>, not "tests". Jira labels a link by the
+      side the other issue sits on, so orientation matters. <code>resolveLinkType</code> matches the configured
+      value (default <code>"is tested by"</code>) against Jira's link types by <em>name or inward/outward
+      description</em> and picks the direction so the <strong>story</strong> displays the intended phrase — placing
+      the test as the inward issue.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">resolveLinkType</span><span class="badge alt">Jira /issueLinkType</span><span class="badge grey">default: "is tested by" (static)</span></div>
+      <div class="note ok"><strong>Net effect</strong>On the story: <em>is tested by → TEST-123</em>. On the test:
+      <em>tests → STORY</em>.</div>
+    </section>
+
+    <section id="fields">
+      <h2>Project-mandatory field handling</h2>
+      <p>Different Jira projects make different fields mandatory on issue creation (e.g. a Tempo <em>Account</em>).
+      To create Test issues anywhere, Manso resolves the extra fields the create needs in two layers:</p>
+      <ol class="steps">
+        <li><strong>Inherit from the story.</strong> Query Jira <code>createmeta</code> for the Test issue type's
+        required fields, then copy <em>primitive</em> values from the source story (which already satisfies its
+        project's rules). Zero config.</li>
+        <li><strong>Override via config or flag.</strong> For fields whose read shape ≠ write shape (Tempo Account reads
+        as <code>{id,value}</code> but writes as a bare number), set <code>xray.testFields</code> in the repo's
+        <code>.agents/manso.config.json</code> or pass <code>--test-fields '{...}'</code>; the flag wins.</li>
+        <li><strong>Per-QA attribution.</strong> <code>--reporter &lt;accountId&gt;</code> sets the <em>Reporter</em> on
+        created Test issues — a Jira rule passes <code>{{initiator.accountId}}</code> so tests are attributed to the
+        triggering QA (the shared credential stays the Creator). Needs the project's <em>Modify Reporter</em>
+        permission; an explicit <code>reporter</code> in <code>--test-fields</code> wins.</li>
+      </ol>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">createmeta discovery</span><span class="badge">story inheritance</span><span class="badge grey">.agents xray.testFields · --test-fields · --reporter</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/design-4.png" alt="diagram" loading="lazy" />
+        <div class="cap">Inherit what round-trips; require an explicit value for shape-sensitive fields.</div>
+      </div>
+    </section>
+
+    <section id="coverage-gap">
+      <h2>Coverage gap analysis</h2>
+      <p>For a ticket that <em>already</em> has tests, the <code>analyse-coverage</code> verb assesses how well the
+      linked Cucumber tests cover the story. An LLM acting as a senior QA engineer rates coverage
+      (good/partial/poor), lists uncovered criteria and gaps, then — for real gaps — generates the
+      <strong>missing scenarios</strong>, posts the analysis as a Jira comment (ADF), and creates the new tests in
+      Xray. Generated steps reuse the existing tests' (and repo's) step phrasings to avoid duplicate definitions.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">coverageGapAnalyser</span><span class="badge alt">LLM (2-pass)</span><span class="badge alt">Jira ADF comment</span><span class="badge alt">Xray createTest</span><span class="badge grey">schema-validated scenarios</span></div>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>Fetch the story context + every linked Cucumber test (with its Gherkin).</li>
+        <li>Pass 1: assess coverage and identify gaps.</li>
+        <li>Pass 2 (only if gaps): generate scenarios, reusing existing step phrasings; drop any that fail schema validation.</li>
+        <li><code>--comment</code> posts the gap analysis as an ADF comment; <code>--create-tests --yes</code> creates the missing tests (with link + mandatory-field handling).</li>
+      </ol>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/design-5.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · Test Design &amp; Xray.</footer>
+</body>
+</html>

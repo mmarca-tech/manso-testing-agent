@@ -1,0 +1,3 @@
+flowchart LR
+  CP[(ContextPack)] --> CH[chunk] --> IDX[BM25 index]
+  Q[query] --> IDX --> TOP[top-k passages] --> LLM[LLM prompt]

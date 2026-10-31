@@ -1,16 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { loadMemoryCabinConfig, type MemoryCabinConfig } from "../memory/config.js";
 import type {
   LangfuseTelemetryConfig,
   LlmProvider,
   LlmRuntimeConfig,
   ObservabilityTelemetryConfig,
+  OpenAiApiStyle,
   OpenTelemetryProvider,
   PhoenixTelemetryConfig,
 } from "../integrations/llm/types.js";
 
 const ConfigSchema = z
   .object({
+    memoryCabin: z.unknown().optional(),
     jiraRest: z
       .object({
         jiraUrl: z.string().url().optional(),
@@ -25,6 +28,12 @@ const ConfigSchema = z
       .strict()
       .optional(),
     azureDevOps: z
+      .object({
+        token: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    github: z
       .object({
         token: z.string().min(1).optional(),
       })
@@ -46,6 +55,19 @@ const ConfigSchema = z
         baseUrl: z.string().url().optional(),
         apiVersion: z.string().min(1).optional(),
         maxOutputTokens: z.number().int().positive().optional(),
+        apiStyle: z.enum(["responses", "chat-completions"]).optional(),
+      })
+      .strict()
+      .optional(),
+    implementationLlm: z
+      .object({
+        provider: z.enum(["openai", "anthropic"]).optional(),
+        apiKey: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        baseUrl: z.string().url().optional(),
+        apiVersion: z.string().min(1).optional(),
+        maxOutputTokens: z.number().int().positive().optional(),
+        apiStyle: z.enum(["responses", "chat-completions"]).optional(),
       })
       .strict()
       .optional(),
@@ -82,6 +104,7 @@ export interface CliOptions {
 }
 
 export interface RuntimeConfig {
+  memoryCabin?: MemoryCabinConfig;
   jiraRest?: {
     jiraUrl: string;
     jiraUsername: string;
@@ -95,7 +118,16 @@ export interface RuntimeConfig {
   azureDevOps?: {
     token: string;
   };
+  github?: {
+    token: string;
+  };
   llm?: LlmRuntimeConfig;
+  /**
+   * Optional override for the implementation half (Codex / Claude Agent SDK).
+   * When unset, the implementation falls back to the design `llm`. This lets
+   * you mix providers, e.g. Azure GPT for design + Anthropic Claude for implement.
+   */
+  implementationLlm?: LlmRuntimeConfig;
   observability?: {
     provider: OpenTelemetryProvider;
     telemetry: ObservabilityTelemetryConfig;
@@ -121,15 +153,21 @@ export async function loadRuntimeConfig(options: CliOptions = {}): Promise<Runti
 
   const jiraRest = loadJiraRestConfig(fileConfig.jiraRest ?? {});
   const azureDevOps = loadAzureDevOpsConfig(fileConfig.azureDevOps ?? {});
+  const github = loadGitHubConfig(fileConfig.github ?? {});
   const llm = loadLlmConfig(fileConfig.llm ?? {}, fileConfig.openAi ?? {});
+  const implementationLlm = loadImplementationLlmConfig(fileConfig.implementationLlm ?? {});
   const observability = loadObservabilityConfig(fileConfig.observability ?? {});
   const openAi = loadOpenAiConfig(fileConfig.openAi ?? {}, llm);
   const xray = loadXrayConfig(fileConfig.xray ?? {});
+  const memoryCabin = loadMemoryCabinConfig(fileConfig.memoryCabin ?? {});
 
   return {
+    ...(memoryCabin.enabled ? { memoryCabin } : {}),
     ...(jiraRest ? { jiraRest } : {}),
     ...(azureDevOps ? { azureDevOps } : {}),
+    ...(github ? { github } : {}),
     ...(llm ? { llm } : {}),
+    ...(implementationLlm ? { implementationLlm } : {}),
     ...(observability ? { observability } : {}),
     ...(openAi ? { openAi } : {}),
     ...(xray ? { xray } : {}),
@@ -186,6 +224,12 @@ function loadAzureDevOpsConfig(configured: NonNullable<z.infer<typeof ConfigSche
   return token ? { token } : undefined;
 }
 
+function loadGitHubConfig(configured: NonNullable<z.infer<typeof ConfigSchema>["github"]>): RuntimeConfig["github"] | undefined {
+  const token = configured.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+
+  return token ? { token } : undefined;
+}
+
 function loadObservabilityConfig(
   configured: NonNullable<z.infer<typeof ConfigSchema>["observability"]>,
 ): RuntimeConfig["observability"] | undefined {
@@ -217,7 +261,7 @@ function loadPhoenixTelemetryConfig(
   const projectName =
     configured.projectName ??
     nonEmpty(process.env.OTEL_PROJECT_NAME) ??
-    "manso-testing-agent";
+    "manso";
   const url =
     configured.url ??
     nonEmpty(process.env.OTEL_ENDPOINT) ??
@@ -252,7 +296,7 @@ function loadLangfuseTelemetryConfig(
   const projectName =
     configured.projectName ??
     nonEmpty(process.env.OTEL_PROJECT_NAME) ??
-    "manso-testing-agent";
+    "manso";
   const url =
     configured.url ??
     nonEmpty(process.env.OTEL_ENDPOINT) ??
@@ -330,12 +374,15 @@ function loadLlmConfig(
       provider,
     );
 
+    const apiStyle = resolveOpenAiApiStyle(configured.apiStyle, baseUrl);
+
     return {
       provider,
       apiKey,
       model,
       ...(baseUrl ? { baseUrl } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+      apiStyle,
     };
   }
 
@@ -364,12 +411,103 @@ function loadLlmConfig(
   };
 }
 
+/**
+ * Resolve an optional implementation-only LLM override. Returns undefined when
+ * no IMPLEMENTATION_LLM_* env var is set and no `implementationLlm` block is
+ * supplied — in that case the implementation half reuses the design `llm`.
+ *
+ * When opted into, the resolver follows the same defaulting + env-var
+ * fallback shape as `loadLlmConfig`, but is read from `IMPLEMENTATION_LLM_*`
+ * (with provider-prefixed fallbacks like `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
+ */
+function loadImplementationLlmConfig(
+  configured: NonNullable<z.infer<typeof ConfigSchema>["implementationLlm"]>,
+): LlmRuntimeConfig | undefined {
+  const explicitProvider = configured.provider ?? nonEmpty(process.env.IMPLEMENTATION_LLM_PROVIDER);
+  const explicitApiKey = configured.apiKey ?? nonEmpty(process.env.IMPLEMENTATION_LLM_API_KEY);
+  const explicitModel = configured.model ?? nonEmpty(process.env.IMPLEMENTATION_LLM_MODEL);
+  const explicitBaseUrl = configured.baseUrl ?? nonEmpty(process.env.IMPLEMENTATION_LLM_BASE_URL);
+
+  // No opt-in signal at all — caller falls back to the design LLM.
+  if (!explicitProvider && !explicitApiKey && !explicitModel && !explicitBaseUrl) {
+    return undefined;
+  }
+
+  const provider = parseLlmProvider(explicitProvider ?? "openai");
+
+  if (provider === "openai") {
+    const apiKey = explicitApiKey ?? nonEmpty(process.env.OPENAI_API_KEY);
+    if (!apiKey) {
+      return undefined;
+    }
+    const model = explicitModel ?? nonEmpty(process.env.OPENAI_MODEL) ?? "gpt-5";
+    const baseUrl = explicitBaseUrl ?? nonEmpty(process.env.OPENAI_BASE_URL);
+    const maxOutputTokens = configured.maxOutputTokens ?? parseOptionalPositiveInteger(
+      nonEmpty(process.env.IMPLEMENTATION_LLM_MAX_OUTPUT_TOKENS),
+      provider,
+    );
+    const apiStyle = resolveOpenAiApiStyle(configured.apiStyle, baseUrl);
+    return {
+      provider,
+      apiKey,
+      model,
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+      apiStyle,
+    };
+  }
+
+  const apiKey = explicitApiKey ?? nonEmpty(process.env.ANTHROPIC_API_KEY);
+  if (!apiKey) {
+    return undefined;
+  }
+  const model = explicitModel ?? nonEmpty(process.env.ANTHROPIC_MODEL) ?? "claude-sonnet-4-6";
+  const baseUrl = explicitBaseUrl ?? nonEmpty(process.env.ANTHROPIC_BASE_URL);
+  const apiVersion = configured.apiVersion ?? nonEmpty(process.env.IMPLEMENTATION_LLM_API_VERSION) ?? nonEmpty(process.env.ANTHROPIC_API_VERSION) ?? "2023-06-01";
+  const maxOutputTokens = configured.maxOutputTokens ?? parseOptionalPositiveInteger(
+    nonEmpty(process.env.IMPLEMENTATION_LLM_MAX_OUTPUT_TOKENS) ?? nonEmpty(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS),
+    provider,
+  ) ?? 16_000;
+
+  return {
+    provider,
+    apiKey,
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    apiVersion,
+    maxOutputTokens,
+  };
+}
+
 function parseLlmProvider(value: string): LlmProvider {
   if (value === "openai" || value === "anthropic") {
     return value;
   }
 
   throw new Error(`LLM provider must be one of: openai, anthropic. Actual value: ${value}`);
+}
+
+/**
+ * Pick the OpenAI API style — explicit config wins, then `LLM_API_STYLE` env,
+ * then auto-detect from the base URL. Azure OpenAI defaults to chat-completions
+ * because the Responses API is regionally rolled out and unavailable in many
+ * tenants today.
+ */
+function resolveOpenAiApiStyle(
+  configured: OpenAiApiStyle | undefined,
+  baseUrl: string | undefined,
+): OpenAiApiStyle {
+  if (configured === "responses" || configured === "chat-completions") {
+    return configured;
+  }
+  const envValue = nonEmpty(process.env.LLM_API_STYLE);
+  if (envValue === "responses" || envValue === "chat-completions") {
+    return envValue;
+  }
+  if (baseUrl && /openai\.azure\.com|\.azure-api\.net/i.test(baseUrl)) {
+    return "chat-completions";
+  }
+  return "responses";
 }
 
 function parseOpenTelemetryProvider(value: string): OpenTelemetryProvider {
@@ -394,7 +532,14 @@ function parseOptionalPositiveInteger(value: string | undefined, provider: LlmPr
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
-  if (value === undefined || value.trim().length === 0) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  // An unmapped Azure Pipelines variable arrives as the literal "$(NAME)" —
+  // treat that (and blank) as unset so an undefined optional var can't poison
+  // config (e.g. an unset IMPLEMENTATION_LLM_BASE_URL becoming a bad base URL).
+  if (trimmed.length === 0 || /^\$\([A-Za-z0-9_.]+\)$/.test(trimmed)) {
     return undefined;
   }
 
@@ -405,7 +550,10 @@ function loadXrayConfig(configured: NonNullable<z.infer<typeof ConfigSchema>["xr
   const clientId = configured.clientId ?? process.env.XRAY_CLIENT_ID;
   const clientSecret = configured.clientSecret ?? process.env.XRAY_CLIENT_SECRET;
   const baseUrl = configured.baseUrl ?? process.env.XRAY_BASE_URL ?? "https://xray.cloud.getxray.app";
-  const testIssueLinkType = configured.testIssueLinkType ?? process.env.XRAY_TEST_LINK_TYPE ?? "tests";
+  // Default to the "is tested by" relationship so the STORY shows it (the
+  // resolver derives the link direction from this phrase). Static for our Jira;
+  // still overridable via XRAY_TEST_LINK_TYPE for instances that differ.
+  const testIssueLinkType = configured.testIssueLinkType ?? process.env.XRAY_TEST_LINK_TYPE ?? "is tested by";
   const testIssueLinkDirection = parseXrayTestLinkDirection(
     configured.testIssueLinkDirection ?? process.env.XRAY_TEST_LINK_DIRECTION,
   );

@@ -1,0 +1,278 @@
+# Manso runner — HOSTED variant (builds from source; no GHCR image pull).
+#
+# Identical behaviour to run.yml, but instead of a prebuilt container it builds
+# Manso from source on a Microsoft-hosted agent. Needs NO Azure resources and
+# NO subscription/RBAC rights — only the 'manso-secrets' variable group and
+# permission to create pipelines (both are Azure DevOps permissions). Use this to
+# get the 3 Jira rules working today; switch to run.yml (GHCR image) later for
+# faster cold starts.
+#
+# Jira rule → mode:  1. Generate=design   2. Implement=implement   3. Handover=both
+
+parameters:
+  - name: mode
+    displayName: What to run
+    type: string
+    default: both
+    values:
+      - design
+      - implement
+      - both
+      - coverage
+  - name: issueKey
+    displayName: Jira issue key (e.g. FINT-1056)
+    type: string
+  - name: targetRepo
+    displayName: Target repo clone URL (optional for design/coverage; required for implement/both)
+    type: string
+    default: ''
+  - name: testFields
+    displayName: Extra Jira fields for created Test issues, JSON object (optional) e.g. {"customfield_15714":170}
+    type: string
+    default: ''
+  - name: reporter
+    displayName: Jira accountId to set as Reporter on created Test issues (optional, e.g. {{initiator.accountId}})
+    type: string
+    default: ''
+  - name: deriveRequirements
+    displayName: 'M22: mine derived requirements beyond the ACs (true/false, blank=on)'
+    type: string
+    default: ''
+  - name: adversarialCritique
+    displayName: 'M22: run the adversarial "what did we miss?" pass (true/false, blank=on)'
+    type: string
+    default: ''
+  - name: riskCoverage
+    displayName: 'M22 risk/edge gate (required | warn | off, blank=warn)'
+    type: string
+    default: ''
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: manso-secrets
+  - name: TARGET_DIR
+    value: '$(Pipeline.Workspace)/target'
+  # Audit log + cost ledger on the published artifact (agent FS is ephemeral).
+  # Note the ledger still resets per run — the daily-budget cap only
+  # accumulates if MANSO_COST_LEDGER points at storage shared across runs.
+  - name: MANSO_AUDIT_LOG
+    value: '$(Build.ArtifactStagingDirectory)/out/audit-log.jsonl'
+  - name: MANSO_COST_LEDGER
+    value: '$(Build.ArtifactStagingDirectory)/out/cost-ledger.jsonl'
+
+steps:
+  # Manso source (this repo) → build it.
+  - checkout: self
+    displayName: Checkout Manso
+
+  - task: NodeTool@0
+    displayName: Use Node 20
+    inputs:
+      versionSpec: '20.x'
+
+  - script: npm ci
+    displayName: Install Manso dependencies
+
+  - script: npm run build
+    displayName: Build Manso (dist/)
+
+  # Diagnostic: can this agent reach Langfuse? OTel exports fail SILENTLY, so a
+  # blocked egress shows up as "no session" with no error. This surfaces it.
+  - script: |
+      url="${OTEL_ENDPOINT%/}/api/public/health"
+      code=$(curl -sS -m 15 -o /dev/null -w "%{http_code}" "$url" || echo "unreachable")
+      echo "Langfuse egress check -> $url : HTTP $code"
+      if [ "$code" != "200" ]; then
+        echo "WARNING: Langfuse not reachable/healthy from this agent (got: $code). OTel traces will silently NOT appear."
+      fi
+    displayName: 'Langfuse egress check (diagnostic)'
+    continueOnError: true
+    condition: always()
+    env:
+      OTEL_ENDPOINT: $(OTEL_ENDPOINT)
+
+  # Clone the target repo using the PAT via http.extraHeader (kept out of the
+  # remote URL and the logs). origin = the Azure URL → drives PR creation.
+  # Only when a targetRepo is supplied — design/coverage can run issue-only.
+  - ${{ if ne(parameters.targetRepo, '') }}:
+      - script: |
+          set -e
+          REPO_URL="${{ parameters.targetRepo }}"
+          # Host-aware auth: GitHub uses x-access-token:<GITHUB_TOKEN>; Azure DevOps
+          # uses :<AZURE_DEVOPS_PAT>. Both via http.extraHeader (kept out of logs/URL).
+          if echo "$REPO_URL" | grep -qi 'github\.com'; then
+            # Fail with a clear message instead of git's cryptic exit 128
+            # ("could not read Username") when the token is absent or rejected.
+            if [ -z "$GITHUB_TOKEN" ] || [ "${GITHUB_TOKEN#\$(}" != "$GITHUB_TOKEN" ]; then
+              echo "##vso[task.logissue type=error]targetRepo is a GitHub URL but GITHUB_TOKEN is empty/unset in the manso-secrets variable group."
+              exit 1
+            fi
+            B64=$(printf "x-access-token:%s" "$GITHUB_TOKEN" | base64 -w0)
+            if ! git -c http.extraHeader="Authorization: Basic $B64" ls-remote --heads "$REPO_URL" > /dev/null 2>&1; then
+              echo "##vso[task.logissue type=error]GITHUB_TOKEN was rejected for $REPO_URL — the PAT is expired, lacks repo read access, or is not authorized for this GitHub org (classic PATs need SSO authorization; fine-grained PATs must be granted on the org/repo). Update GITHUB_TOKEN in manso-secrets."
+              exit 1
+            fi
+          else
+            if [ -z "$AZURE_DEVOPS_PAT" ] || [ "${AZURE_DEVOPS_PAT#\$(}" != "$AZURE_DEVOPS_PAT" ]; then
+              echo "##vso[task.logissue type=error]targetRepo is an Azure DevOps URL but AZURE_DEVOPS_PAT is empty/unset in the manso-secrets variable group."
+              exit 1
+            fi
+            B64=$(printf ":%s" "$AZURE_DEVOPS_PAT" | base64 -w0)
+          fi
+          rm -rf "$(TARGET_DIR)"
+          git -c http.extraHeader="Authorization: Basic $B64" clone "$REPO_URL" "$(TARGET_DIR)"
+        displayName: Clone target repo
+        env:
+          AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
+          GITHUB_TOKEN: $(GITHUB_TOKEN)
+
+      # The implement step commits on a branch; a fresh agent has no git identity,
+      # so `git commit` would fail silently ("Nothing to commit"). Set one.
+      - script: |
+          git config --global user.email "manso-agent@example.com"
+          git config --global user.name "Manso Agent"
+        displayName: Configure git identity
+
+  - ${{ if in(parameters.mode, 'design', 'both') }}:
+      - script: |
+          set -e
+          # --repo is optional for design: with a targetRepo we reuse the repo's
+          # existing steps + .agents config; without one we run issue-only.
+          REPO_ARG=""
+          if [ -n "$TARGET_REPO" ]; then REPO_ARG="--repo $(TARGET_DIR)"; fi
+          node "$(Build.SourcesDirectory)/dist/cli/main.js" design-tests \
+            --issue "${{ parameters.issueKey }}" \
+            $REPO_ARG \
+            --test-fields "$TEST_FIELDS" \
+            --reporter "$REPORTER" \
+            --derive-requirements "$DERIVE_REQUIREMENTS" \
+            --adversarial-critique "$ADVERSARIAL_CRITIQUE" \
+            --risk-coverage "$RISK_COVERAGE" \
+            --out "$(Build.ArtifactStagingDirectory)/out" \
+            --yes
+        displayName: 'design-tests (${{ parameters.issueKey }})'
+        env:
+          TARGET_REPO: ${{ parameters.targetRepo }}
+          TEST_FIELDS: ${{ parameters.testFields }}
+          REPORTER: ${{ parameters.reporter }}
+          DERIVE_REQUIREMENTS: ${{ parameters.deriveRequirements }}
+          ADVERSARIAL_CRITIQUE: ${{ parameters.adversarialCritique }}
+          RISK_COVERAGE: ${{ parameters.riskCoverage }}
+          JIRA_URL: $(JIRA_URL)
+          JIRA_USERNAME: $(JIRA_USERNAME)
+          JIRA_API_TOKEN: $(JIRA_API_TOKEN)
+          JIRA_CLOUD_ID: $(JIRA_CLOUD_ID)
+          XRAY_BASE_URL: $(XRAY_BASE_URL)
+          XRAY_CLIENT_ID: $(XRAY_CLIENT_ID)
+          XRAY_CLIENT_SECRET: $(XRAY_CLIENT_SECRET)
+          LLM_PROVIDER: $(LLM_PROVIDER)
+          LLM_API_KEY: $(LLM_API_KEY)
+          LLM_MODEL: $(LLM_MODEL)
+          LLM_BASE_URL: $(LLM_BASE_URL)
+          ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+          OPENAI_API_KEY: $(OPENAI_API_KEY)
+          OTEL_PROVIDER: $(OTEL_PROVIDER)
+          OTEL_ENABLED: $(OTEL_ENABLED)
+          OTEL_ENDPOINT: $(OTEL_ENDPOINT)
+          OTEL_PUBLIC_KEY: $(OTEL_PUBLIC_KEY)
+          OTEL_SECRET_KEY: $(OTEL_SECRET_KEY)
+          MANSO_AUDIT_LOG: $(MANSO_AUDIT_LOG)
+          MANSO_COST_LEDGER: $(MANSO_COST_LEDGER)
+          MANSO_MODEL_PRICES: $(MANSO_MODEL_PRICES)
+
+  - ${{ if in(parameters.mode, 'implement', 'both') }}:
+      - script: |
+          set -e
+          if [ -z "$TARGET_REPO" ]; then
+            echo "##vso[task.logissue type=error]implement/both requires a targetRepo — the agent has to write code into a repo."
+            exit 1
+          fi
+          # --require-linked-tests: the implement rule presumes design ran first,
+          # so a story with NO linked tests fails loudly instead of a green no-op.
+          node "$(Build.SourcesDirectory)/dist/cli/main.js" implement-tests \
+            --issue "${{ parameters.issueKey }}" \
+            --repo "$(TARGET_DIR)" \
+            --require-linked-tests \
+            --pr
+        displayName: 'implement-tests (${{ parameters.issueKey }})'
+        env:
+          TARGET_REPO: ${{ parameters.targetRepo }}
+          JIRA_URL: $(JIRA_URL)
+          JIRA_USERNAME: $(JIRA_USERNAME)
+          JIRA_API_TOKEN: $(JIRA_API_TOKEN)
+          XRAY_BASE_URL: $(XRAY_BASE_URL)
+          XRAY_CLIENT_ID: $(XRAY_CLIENT_ID)
+          XRAY_CLIENT_SECRET: $(XRAY_CLIENT_SECRET)
+          AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
+          GITHUB_TOKEN: $(GITHUB_TOKEN)
+          LLM_PROVIDER: $(LLM_PROVIDER)
+          LLM_API_KEY: $(LLM_API_KEY)
+          LLM_MODEL: $(LLM_MODEL)
+          LLM_BASE_URL: $(LLM_BASE_URL)
+          ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+          OPENAI_API_KEY: $(OPENAI_API_KEY)
+          IMPLEMENTATION_LLM_PROVIDER: $(IMPLEMENTATION_LLM_PROVIDER)
+          IMPLEMENTATION_LLM_API_KEY: $(IMPLEMENTATION_LLM_API_KEY)
+          IMPLEMENTATION_LLM_MODEL: $(IMPLEMENTATION_LLM_MODEL)
+          IMPLEMENTATION_LLM_BASE_URL: $(IMPLEMENTATION_LLM_BASE_URL)
+          OTEL_PROVIDER: $(OTEL_PROVIDER)
+          OTEL_ENABLED: $(OTEL_ENABLED)
+          OTEL_ENDPOINT: $(OTEL_ENDPOINT)
+          OTEL_PUBLIC_KEY: $(OTEL_PUBLIC_KEY)
+          OTEL_SECRET_KEY: $(OTEL_SECRET_KEY)
+          MANSO_AUDIT_LOG: $(MANSO_AUDIT_LOG)
+          MANSO_COST_LEDGER: $(MANSO_COST_LEDGER)
+          MANSO_MODEL_PRICES: $(MANSO_MODEL_PRICES)
+          MANSO_SANDBOX: danger-full-access
+
+  - ${{ if eq(parameters.mode, 'coverage') }}:
+      - script: |
+          set -e
+          REPO_ARG=""
+          if [ -n "$TARGET_REPO" ]; then REPO_ARG="--repo $(TARGET_DIR)"; fi
+          node "$(Build.SourcesDirectory)/dist/cli/main.js" analyse-coverage \
+            --issue "${{ parameters.issueKey }}" \
+            $REPO_ARG \
+            --test-fields "$TEST_FIELDS" \
+            --reporter "$REPORTER" \
+            --out "$(Build.ArtifactStagingDirectory)/out" \
+            --comment \
+            --create-tests --yes
+        displayName: 'analyse-coverage (${{ parameters.issueKey }})'
+        env:
+          TARGET_REPO: ${{ parameters.targetRepo }}
+          TEST_FIELDS: ${{ parameters.testFields }}
+          REPORTER: ${{ parameters.reporter }}
+          JIRA_URL: $(JIRA_URL)
+          JIRA_USERNAME: $(JIRA_USERNAME)
+          JIRA_API_TOKEN: $(JIRA_API_TOKEN)
+          JIRA_CLOUD_ID: $(JIRA_CLOUD_ID)
+          XRAY_BASE_URL: $(XRAY_BASE_URL)
+          XRAY_CLIENT_ID: $(XRAY_CLIENT_ID)
+          XRAY_CLIENT_SECRET: $(XRAY_CLIENT_SECRET)
+          LLM_PROVIDER: $(LLM_PROVIDER)
+          LLM_API_KEY: $(LLM_API_KEY)
+          LLM_MODEL: $(LLM_MODEL)
+          LLM_BASE_URL: $(LLM_BASE_URL)
+          ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+          OPENAI_API_KEY: $(OPENAI_API_KEY)
+          OTEL_PROVIDER: $(OTEL_PROVIDER)
+          OTEL_ENABLED: $(OTEL_ENABLED)
+          OTEL_ENDPOINT: $(OTEL_ENDPOINT)
+          OTEL_PUBLIC_KEY: $(OTEL_PUBLIC_KEY)
+          OTEL_SECRET_KEY: $(OTEL_SECRET_KEY)
+          MANSO_AUDIT_LOG: $(MANSO_AUDIT_LOG)
+          MANSO_COST_LEDGER: $(MANSO_COST_LEDGER)
+          MANSO_MODEL_PRICES: $(MANSO_MODEL_PRICES)
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish out/ (design + audit log + cost ledger)
+    condition: always()
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/out'
+      artifact: 'manso-out'

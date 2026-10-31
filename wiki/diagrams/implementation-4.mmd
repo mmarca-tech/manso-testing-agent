@@ -1,0 +1,12 @@
+flowchart TB
+  START["implement-tests"] --> CFG{stack.setupCommand?}
+  CFG -->|no| FALLBACK["implement · verify may be red · raise PR"]
+  CFG -->|yes| UP["setup env (docker compose up)"]
+  UP --> READY{app reachable?}
+  READY -->|no| FALLBACK
+  READY -->|yes| EXP["explore: Playwright MCP (UI) / OpenAPI (API)"]
+  EXP --> BRIEF["exploration brief → out/&lt;KEY&gt;/exploration.md"]
+  BRIEF --> IMPL["implement with real locators / endpoints"]
+  IMPL --> VER["verify against live env"] --> HEAL["heal"] --> PR["raise PR"]
+  PR --> DOWN["teardown env"]
+  FALLBACK --> DOWN

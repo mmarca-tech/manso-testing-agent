@@ -1,0 +1,6 @@
+flowchart LR
+  SIG[signal: PR feedback / failure] --> CLF{classify}
+  CLF -->|transient| LOG[record only]
+  CLF -->|systemic| EDIT[proposed guideline edit]
+  EDIT --> PRR[[separate review PR]]
+  PRR -->|human merges| APPLIED[rule takes effect]

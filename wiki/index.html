@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Manso — Feature Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>Overview</h4>
+    <a href="#what">What is Manso</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#workflow">End-to-end workflow</a>
+    <a href="#stack">Technology stack</a>
+    <a href="#principles">Design principles</a>
+    <h4>Explore</h4>
+    <a href="context.html">Context Layer</a>
+    <a href="design.html">Test Design &amp; Xray</a>
+    <a href="implementation.html">Implementation &amp; VCS</a>
+    <a href="feedback.html">PR Feedback &amp; Learning</a>
+    <a href="platform.html">Governance &amp; Platform</a>
+    <a href="operations.html">CLI, Docker &amp; Pipeline</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>Manso</h1>
+      <p class="lead">An end-to-end AI testing agent: it turns a Jira ticket into a Gherkin or plain-English
+      test design (uploaded to Xray as linked Cucumber or Manual tests) and a verified automation pull request,
+      then learns from PR feedback — runnable locally or unattended in a CI pipeline.</p>
+    </div>
+
+    <section id="what">
+      <h2>What is Manso</h2>
+      <p>Manso is a command-line agent and library built around a simple idea: <strong>an agentic core
+      with bounded artifacts</strong>. Sub-agents (Researcher, Test Architect, Coverage Auditor, Implementer,
+      Verifier, Responder, Learning Engine) do the open-ended thinking, but everything they hand off is a
+      <strong>Zod-validated artifact</strong> — a ContextPack, a TestDesignPack, an ImplementationPack, a
+      LearningRecordSet — so the pipeline stays inspectable, testable, and safe.</p>
+      <p>It connects to <strong>Jira</strong> (story context), <strong>Xray</strong> (test management),
+      <strong>Azure DevOps / GitHub</strong> (code + pull requests), and an <strong>LLM</strong> (OpenAI/Azure OpenAI
+      for design, Anthropic Claude for implementation), with <strong>OpenTelemetry → Langfuse/Phoenix</strong>
+      observability across every run.</p>
+      <div class="stack">
+        <span class="badge">TypeScript (ESM, strict)</span>
+        <span class="badge">Node ≥ 20</span>
+        <span class="badge">Zod v4</span>
+        <span class="badge">Vitest</span>
+        <span class="badge alt">Jira Cloud REST</span>
+        <span class="badge alt">Xray GraphQL</span>
+        <span class="badge alt">Azure DevOps / GitHub</span>
+        <span class="badge alt">Claude Agent SDK · Codex SDK</span>
+        <span class="badge alt">OpenTelemetry · Langfuse</span>
+        <span class="badge grey">Docker · Azure Pipelines</span>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Architecture at a glance</h2>
+      <p>Five layers, top to bottom: the <strong>CLI</strong> dispatches verbs; the <strong>Agent layer</strong>
+      orchestrates sub-agents; the <strong>Context, Skills, Integrations and Policy</strong> layers are pure
+      capabilities; and every stage emits a <strong>Zod artifact</strong> before hand-off.</p>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/index-1.png" alt="diagram" loading="lazy" />
+        <div class="cap">Layered component view — the Agent layer is the only place that combines everything below it.</div>
+      </div>
+    </section>
+
+    <section id="workflow">
+      <h2>End-to-end workflow</h2>
+      <p>The three headline flows — <strong>design</strong>, <strong>implement</strong>, and
+      <strong>respond-to-PR</strong> — chain through gates and artifacts. Each can run independently
+      (e.g. a pipeline triggers design, then implementation, as separate jobs).</p>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/index-2.png" alt="diagram" loading="lazy" />
+        <div class="cap">design-tests → implement-tests → respond-to-pr, with the coverage gate and heal loop.</div>
+      </div>
+    </section>
+
+    <section id="catalog">
+      <h2>Feature catalog</h2>
+      <div class="cards">
+        <a class="card" href="context.html"><h3>Context Layer →</h3><p>Providers, ADF→Markdown, linked tickets, attachment vision, evidence graph, BM25 retrieval, agentic researcher.</p></a>
+        <a class="card" href="design.html"><h3>Test Design →</h3><p>AC extraction, Gherkin authoring, coverage gate, derived requirements + risk/edge coverage, output modes, step reuse.</p></a>
+        <a class="card" href="design.html#xray"><h3>Xray Integration →</h3><p>Cucumber &amp; Manual upload, link-relationship resolution, mandatory-field inheritance + overrides.</p></a>
+        <a class="card" href="design.html#coverage-gap"><h3>Coverage Gap Analysis →</h3><p>Assess linked tests vs the story, comment the gaps, create the missing tests.</p></a>
+        <a class="card" href="implementation.html"><h3>Implementation →</h3><p>Code-agent SDKs, MCP tools, verify + heal loop, branch/commit, Xray-sourced design.</p></a>
+        <a class="card" href="implementation.html#vcs"><h3>VCS &amp; Token Push →</h3><p>Azure DevOps + GitHub adapters; token-authenticated push for unattended runs.</p></a>
+        <a class="card" href="feedback.html"><h3>PR Feedback Loop →</h3><p>@manso mentions, intent classification, scoped fixes, loop-safety.</p></a>
+        <a class="card" href="feedback.html#learning"><h3>Learning Engine →</h3><p>Classify transient vs systemic, propose guideline PRs, knowledge-update triggers.</p></a>
+        <a class="card" href="platform.html"><h3>Governance →</h3><p>Cost budgets, append-only audit log, secret redaction, sandbox profiles.</p></a>
+        <a class="card" href="platform.html#observability"><h3>Observability →</h3><p>OpenTelemetry spans flushed to Langfuse / Phoenix, one session per ticket.</p></a>
+        <a class="card" href="platform.html#skills"><h3>Skills &amp; MCP →</h3><p>SKILL.md progressive disclosure with repo overrides; MCP tool ecosystem.</p></a>
+        <a class="card" href="operations.html"><h3>CLI, Docker &amp; Pipeline →</h3><p>Verb reference, container image, Azure pipelines, Jira automation rules.</p></a>
+      </div>
+    </section>
+
+    <section id="stack">
+      <h2>Technology stack</h2>
+      <table>
+        <tr><th>Concern</th><th>Technology</th></tr>
+        <tr><td>Language / runtime</td><td>TypeScript (NodeNext ESM, <code>strict</code>, <code>exactOptionalPropertyTypes</code>, <code>noUncheckedIndexedAccess</code>), Node ≥ 20</td></tr>
+        <tr><td>Validation</td><td>Zod v4 — every cross-stage artifact has a schema</td></tr>
+        <tr><td>Tests</td><td>Vitest (fixture-based, no network)</td></tr>
+        <tr><td>Context sources</td><td>Jira Cloud REST v3 + GraphQL dev-info, Confluence REST, Xray Cloud GraphQL</td></tr>
+        <tr><td>Design LLM</td><td>OpenAI / Azure OpenAI (Responses or Chat-Completions, auto-detected)</td></tr>
+        <tr><td>Implementation agent</td><td>Anthropic Claude Agent SDK or OpenAI Codex SDK (in-process)</td></tr>
+        <tr><td>VCS</td><td>Azure DevOps + GitHub REST (PRs, comments) + git push via <code>http.extraHeader</code></td></tr>
+        <tr><td>Tooling for agents</td><td>Model Context Protocol (Playwright, Figma, …)</td></tr>
+        <tr><td>Observability</td><td>OpenTelemetry → Langfuse or Arize Phoenix</td></tr>
+        <tr><td>Packaging / CI</td><td>Docker (Playwright base) + Azure Pipelines, triggered by Jira Automation</td></tr>
+      </table>
+    </section>
+
+    <section id="principles">
+      <h2>Design principles</h2>
+      <ol class="steps">
+        <li><strong>Agentic core, bounded artifacts.</strong> Sub-agents think freely; hand-offs are Zod-validated.</li>
+        <li><strong>Provenance &amp; warnings everywhere.</strong> Every artifact records where data came from and what was uncertain — nothing fails silently.</li>
+        <li><strong>Seams over hard-coding.</strong> ContextProvider, VcsAdapter, and the agent runner are interfaces, so new platforms drop in.</li>
+        <li><strong>Safe by default.</strong> Human-review gates, cost budgets, secret redaction, and an audit log make unattended runs trustworthy.</li>
+        <li><strong>Reuse what exists.</strong> Existing repo steps and skills steer generation so new tests fit the house style.</li>
+      </ol>
+    </section>
+  </main>
+</div>
+
+<footer>
+  Manso feature wiki · generated documentation · diagrams rendered with Mermaid.
+</footer>
+</body>
+</html>

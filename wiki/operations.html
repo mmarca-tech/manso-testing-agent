@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CLI, Docker &amp; Pipeline — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>CLI</h4>
+    <a href="#cli">Verb reference</a>
+    <h4>Packaging</h4>
+    <a href="#docker">Docker image</a>
+    <h4>CI</h4>
+    <a href="#pipelines">Azure pipelines</a>
+    <a href="#modes">Run modes</a>
+    <a href="#jira">Jira automation rules</a>
+    <a href="#auth">Auth on CI</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>CLI, Docker &amp; Pipeline</h1>
+      <p class="lead">How you actually run Manso — the command verbs, the container image, and the Azure
+      pipelines that let Jira automation rules drive it unattended.</p>
+    </div>
+
+    <section id="cli">
+      <h2>CLI verb reference</h2>
+      <p>A single <code>manso</code> binary dispatches verbs; each verb is an independently testable
+      <code>run()</code> function. Every verb supports <code>--help</code>.</p>
+      <table>
+        <tr><th>Verb</th><th>Purpose</th></tr>
+        <tr><td><code>init</code></td><td>Scaffold the <code>.agents/</code> folder into a target repo</td></tr>
+        <tr><td><code>check</code></td><td>Score a repo's Manso readiness (0–100), CI-gateable</td></tr>
+        <tr><td><code>fetch</code></td><td>Diagnostic: fetch one Jira ticket through the Context Layer</td></tr>
+        <tr><td><code>skills</code></td><td>List resolved skills (packaged + repo overrides)</td></tr>
+        <tr><td><code>design-tests</code></td><td>Context → design → Xray (Cucumber or Manual tests linked to the story)</td></tr>
+        <tr><td><code>implement-tests</code></td><td>Implement → verify → heal → PR. <code>--design &lt;file&gt;</code> or stateless <code>--issue &lt;KEY&gt;</code></td></tr>
+        <tr><td><code>analyse-coverage</code></td><td>Assess coverage gaps, comment the analysis, create missing tests</td></tr>
+        <tr><td><code>respond-to-pr</code></td><td>Act on <code>@manso</code> PR comments (fix / reply / propose rule)</td></tr>
+        <tr><td><code>eval</code></td><td>Score golden designs against the coverage gate (release gate)</td></tr>
+        <tr><td><code>audit</code></td><td>Read the append-only audit log</td></tr>
+      </table>
+    </section>
+
+    <section id="docker">
+      <h2>Docker image</h2>
+      <p>A multi-stage <code>Dockerfile</code> builds Manso and ships it on the <strong>Playwright base image</strong>
+      (Node 20 + browsers + OS deps) with <code>git</code> added. The code agent runs in-process via the SDKs (just an
+      API key), but the Playwright MCP server and the target's <code>npm run test:ui</code> need browsers — hence the
+      Playwright base, which also powers the <a href="implementation.html#environment">environment-aware run (M20)</a>.
+      Secrets are passed at <code>docker run</code> time, never baked in.</p>
+      <div class="stack"><span class="badge grey">node:20 builder → mcr.microsoft.com/playwright runtime</span><span class="badge">npm run docker:build</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/operations-1.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="pipelines">
+      <h2>GitHub Actions and Azure runtime pipelines</h2>
+      <p>CI, container publishing, and package releases use GitHub Actions. Two Azure pipeline definitions remain for Jira automation triggers:</p>
+      <ul>
+        <li><strong><code>.github/workflows/ci.yml</code></strong> — type-checks, tests, evaluates golden cases, and publishes the main image to GHCR.</li>
+        <li><strong><code>.github/workflows/release.yml</code></strong> — a manual release from <code>main</code> or pushed <code>vX.Y.Z</code> tag publishes the npm package, GitHub Release, and versioned GHCR image.</li>
+        <li><strong><code>pipelines/run.yml</code></strong> — the Jira-triggered runner using the GHCR image.</li>
+        <li><strong><code>pipelines/run-hosted.yml</code></strong> — the same runner built from source on a Microsoft-hosted agent.</li>
+      </ul>
+      <p>Both runners take the <strong>same parameter set</strong> (see the table below) and stay in sync; each clones
+      the target repo when one is supplied (host-aware auth: GitHub token or Azure PAT), runs the requested step(s),
+      and publishes <code>out/</code> (design artifacts, audit log, cost ledger) as a pipeline artifact.</p>
+      <div class="stack"><span class="badge grey">GitHub Actions</span><span class="badge grey">GHCR</span><span class="badge grey">Azure runtime pipelines</span><span class="badge grey">manso-secrets variable group</span></div>
+    </section>
+
+    <section id="modes">
+      <h2>Run modes</h2>
+      <p>One parameterized pipeline serves every Jira rule via the <code>mode</code> parameter:</p>
+      <table>
+        <tr><th>Jira rule</th><th><code>mode</code></th><th>What runs</th></tr>
+        <tr><td>Generate test cases</td><td><code>design</code></td><td><code>design-tests --yes</code> → Gherkin in Xray</td></tr>
+        <tr><td>Implement automated tests</td><td><code>implement</code></td><td><code>implement-tests --issue … --pr</code> (Xray-sourced)</td></tr>
+        <tr><td>Ticket Ready → handover</td><td><code>both</code></td><td>design, then implement, in one run</td></tr>
+        <tr><td>Analyse coverage gaps</td><td><code>coverage</code></td><td><code>analyse-coverage --comment --create-tests --yes</code></td></tr>
+      </table>
+      <p>Beyond <code>mode</code>/<code>issueKey</code>, the runner takes optional parameters:</p>
+      <table>
+        <tr><th>Parameter</th><th>Purpose</th></tr>
+        <tr><td><code>targetRepo</code></td><td>Clone URL. <strong>Optional</strong> for <code>design</code>/<code>coverage</code> (run issue-only); <strong>required</strong> for <code>implement</code>/<code>both</code>.</td></tr>
+        <tr><td><code>testFields</code></td><td>JSON object of project-mandatory Jira fields for created Test issues, e.g. <code>{"customfield_15714":170}</code>.</td></tr>
+        <tr><td><code>reporter</code></td><td>Jira accountId set as <em>Reporter</em> on created tests — pass <code>{{initiator.accountId}}</code> to attribute them to the triggering QA (needs <em>Modify Reporter</em> permission).</td></tr>
+        <tr><td><code>deriveRequirements</code> · <code>adversarialCritique</code> · <code>riskCoverage</code></td><td>M22 knobs — derived requirements, the critique pass, and the risk/edge gate (<code>required</code>|<code>warn</code>|<code>off</code>). <strong>Default on</strong> (gate <code>warn</code>); send a value to override.</td></tr>
+      </table>
+    </section>
+
+    <section id="jira">
+      <h2>Jira automation rules</h2>
+      <p>Each rule ends with a <strong>"Send web request"</strong> action calling the Azure DevOps Pipelines REST API
+      to queue a run. The body sets <code>templateParameters</code> — <code>mode</code> (fixed per rule),
+      <code>issueKey</code> from <code>{{issue.key}}</code>, and the per-project <code>targetRepo</code>. No webhook is
+      created on the Azure side — the call is outbound from Jira.</p>
+      <pre class="code"><code>POST https://dev.azure.com/&lt;org&gt;/&lt;project&gt;/_apis/pipelines/&lt;id&gt;/runs?api-version=7.1
+Authorization: Basic &lt;base64(":" + PAT)&gt;
+{
+  "templateParameters": {
+    "mode": "design",
+    "issueKey": "{{issue.key}}",
+    "targetRepo": "https://dev.azure.com/org/project/_git/repo",
+    "testFields": "{\"customfield_15714\": 170}",
+    "reporter": "{{initiator.accountId}}",
+    "deriveRequirements": "true", "riskCoverage": "warn"
+  }
+}</code></pre>
+      <div class="note"><strong>Full walkthrough</strong>Creating the rules end-to-end — PAT base64, trigger/conditions,
+      the per-project mandatory-field id, and the gotchas — is documented in <code>docs/JIRA-AUTOMATION.md</code>.</div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/operations-2.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="auth">
+      <h2>Auth on CI</h2>
+      <p>Secrets come from a Key-Vault-backed <strong>variable group</strong> (<code>manso-secrets</code>) and are
+      mapped explicitly into each step's <code>env</code> (in a container job, secret variables aren't auto-exposed).
+      The token authenticates both the REST API <em>and</em> the git push, so a clean agent needs no pre-configured
+      git credentials. The clone step is <strong>host-aware</strong>: a GitHub <code>targetRepo</code> uses
+      <code>GITHUB_TOKEN</code>, an Azure one uses <code>AZURE_DEVOPS_PAT</code>.</p>
+      <div class="stack"><span class="badge grey">JIRA_* · XRAY_* · LLM_* · ANTHROPIC/OPENAI · AZURE_DEVOPS_PAT / GITHUB_TOKEN · OTEL_*</span></div>
+      <div class="note ok"><strong>Verify against a live env (M20)</strong>When the target stack configures a
+      <code>setupCommand</code> (Docker), the run is <a href="implementation.html#environment">environment-aware</a>:
+      it stands the app up, explores it, and verifies against it. Without Docker infra it falls back gracefully —
+      <code>verify</code> is red but the PR is still raised for human review.</div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · CLI, Docker &amp; Pipeline.</footer>
+</body>
+</html>

@@ -1,0 +1,9 @@
+flowchart LR
+  S[story] --> CTX[context + ACs]
+  X[linked Xray tests + gherkin] --> AN[Pass 1 · assess]
+  CTX --> AN
+  AN --> RATE{gaps?}
+  RATE -->|no| OK[comment: all clear]
+  RATE -->|yes| GEN[Pass 2 · generate missing<br/>reuse existing steps]
+  GEN --> CMT[ADF comment]
+  GEN --> NEW[create tests in Xray]

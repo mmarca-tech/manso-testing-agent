@@ -1,0 +1,119 @@
+name: Release Manso
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: manso-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate release
+        run: |
+          npm run check
+          npm test
+          if find eval/cases -type f -name '*.json' ! -name '*.reference.json' -print -quit | grep -q .; then
+            npm run build
+            node dist/cli/main.js eval --cases eval/cases
+          else
+            echo "::notice::No TestDesignPack JSON files are checked into eval/cases; skipping golden-case evaluation."
+          fi
+
+      - name: Create immutable version tag
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            node scripts/release.mjs tag
+            tag="$(git tag --points-at HEAD --list 'v[0-9]*' --sort=-version:refname | head -n 1)"
+          else
+            tag="$REF_NAME"
+          fi
+          if [ -z "$tag" ]; then
+            echo "Release script did not create a version tag." >&2
+            exit 1
+          fi
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must be an exact stable vX.Y.Z tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Align package and changelog
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p release
+          node scripts/release.mjs align "$RELEASE_TAG" release/CHANGELOG.md
+
+      - name: Pack and publish scoped npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/.azure/.npmrc
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm pack --pack-destination release
+          npm publish "release/mmarca-tech-manso-testing-agent-$RELEASE_VERSION.tgz"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish versioned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/mmarca-tech/manso-testing-agent:${{ steps.version.outputs.tag }}
+            ghcr.io/mmarca-tech/manso-testing-agent:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/mmarca-tech/manso-testing-agent
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "release/mmarca-tech-manso-testing-agent-${RELEASE_VERSION}.tgz" \
+            release/CHANGELOG.md \
+            --title "$RELEASE_TAG" \
+            --notes-file release/CHANGELOG.md

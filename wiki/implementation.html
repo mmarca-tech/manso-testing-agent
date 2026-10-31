@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Implementation &amp; VCS — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>Implementation Engine</h4>
+    <a href="#overview">Overview</a>
+    <a href="#agent">Code agent (SDKs)</a>
+    <a href="#mcp">MCP tools</a>
+    <a href="#environment">Environment-aware (M20)</a>
+    <a href="#verify">Verify &amp; heal loop</a>
+    <a href="#commit">Branch &amp; commit</a>
+    <h4>Source of work</h4>
+    <a href="#design-file">From a design file</a>
+    <a href="#xray-sourced">From Xray (--issue)</a>
+    <h4>Version control</h4>
+    <a href="#vcs">VcsAdapter (Azure + GitHub)</a>
+    <a href="#push">Token-based push</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>Implementation &amp; VCS</h1>
+      <p class="lead">A code agent turns the test design into real step definitions and page objects, verifies them,
+      heals failures, and raises a pull request — on Azure DevOps or GitHub, authenticated for unattended runs.</p>
+    </div>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>The <code>implement-tests</code> verb runs the <strong>Implementer → Verifier → (Healer) → commit → PR</strong>
+      chain and emits an <code>ImplementationPack</code> (changed files, per-scenario status, verify results, heal
+      attempts, PR reference, prompt path). The code agent runs <strong>in-process</strong> via an SDK — no external
+      CLI binary — so it just needs an API key.</p>
+      <div class="stack">
+        <span class="badge">Implementer</span><span class="badge">Verifier · Healer</span>
+        <span class="badge alt">Claude Agent SDK</span><span class="badge alt">Codex SDK</span>
+        <span class="badge">Zod ImplementationPack</span><span class="badge grey">VcsAdapter</span>
+      </div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/implementation-1.png" alt="diagram" loading="lazy" />
+        <div class="cap">Concept: an identified test case plus the target repository (test project, skills, automation framework) drive the agent pipeline to implement and raise a PR.</div>
+      </div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/implementation-2.png" alt="diagram" loading="lazy" />
+      </div>
+    </section>
+
+    <section id="agent">
+      <h2>The code agent (in-process SDKs)</h2>
+      <p>The Implementer selects a <strong>binding skill</strong> for the stack (<code>playwright-bdd-ts</code>,
+      <code>dotnet-reqnroll</code>), builds a prompt from the design pack + the repo's <code>.agents/</code> guidance
+      and <code>AGENTS.md</code>, and invokes the agent runner. Provider is chosen from config:
+      <strong>Anthropic Claude</strong> (Claude Agent SDK) or <strong>OpenAI Codex</strong> (Codex SDK). Both run the
+      agent loop in-process and edit files directly in the repo working tree.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge alt">@anthropic-ai/claude-agent-sdk</span><span class="badge alt">@openai/codex-sdk</span><span class="badge grey">IMPLEMENTATION_LLM_* / ANTHROPIC_API_KEY</span></div>
+      <div class="note"><strong>Design vs implementation LLM</strong>Manso supports different providers for each
+      half — e.g. Azure OpenAI for design, Claude for implementation. The Claude runner authenticates via
+      <code>ANTHROPIC_API_KEY</code> in the environment; Codex via the OpenAI key in config.</div>
+    </section>
+
+    <section id="mcp">
+      <h2>MCP tools for the agent</h2>
+      <p>Through the <strong>Model Context Protocol</strong>, the agent can use live tools — most importantly a
+      <strong>Playwright MCP server</strong> to drive a real browser and read DOM. <code>mcpServers</code> in the
+      <code>.agents</code> config (stdio/http/sse) are expanded (with <code>${ENV}</code> placeholders) and passed to
+      the SDK, which launches stdio servers as subprocesses.</p>
+      <div class="stack"><span class="badge">mcp/config.ts</span><span class="badge grey">playwright: npx @playwright/mcp</span></div>
+      <div class="note ok"><strong>Used by M20</strong>When the stack configures Docker, the
+      <a href="#environment">environment-aware run</a> uses this Playwright MCP server to explore the live app for
+      real DOM locators before any code is written, so the agent stops guessing selectors.</div>
+    </section>
+
+    <section id="environment">
+      <h2>Environment-aware run, explore-before-implement (M20)</h2>
+      <p>When a stack configures a <code>setupCommand</code> (e.g. <code>docker compose up -d</code>), Manso
+      grounds the tests in the <strong>real running app</strong> instead of guessing. It brings the environment up
+      <strong>once</strong>, <strong>explores</strong> it to build a brief, implements with that brief, verifies
+      against the live env, and tears it down. Crucially, this is <strong>opt-in and non-blocking</strong>: if the
+      repo has no Docker infra, Docker isn't available, or the app never comes up, Manso <strong>falls back to
+      today's flow</strong> and still raises the PR.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">agents/environment</span><span class="badge">agents/explorer</span><span class="badge alt">Playwright MCP (UI)</span><span class="badge alt">OpenAPI (API)</span><span class="badge grey">stack.setupCommand · appUrl · healthCheck · openApiUrl · --no-env</span></div>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li><strong>Detect.</strong> Env-aware only when <code>stack.setupCommand</code> is set (and <code>--no-env</code> isn't passed).</li>
+        <li><strong>Setup once.</strong> Run <code>setupCommand</code>, then poll <code>healthCheck</code>/<code>appUrl</code> until the app responds (non-5xx) or a timeout.</li>
+        <li><strong>Explore.</strong> UI → drive the live app via Playwright MCP and report real role/label/test-id locators and flows; API → fetch the OpenAPI spec and summarize endpoints + schemas. The brief is saved to <code>out/&lt;KEY&gt;/exploration.md</code>.</li>
+        <li><strong>Implement</strong> with the brief injected into the prompt (real locators/endpoints, no guessing).</li>
+        <li><strong>Verify</strong> against the running env; heal on failure.</li>
+        <li><strong>Teardown.</strong> Always run <code>teardownCommand</code> afterwards (even if setup/verify failed) — no leaked containers.</li>
+      </ol>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/implementation-4.png" alt="diagram" loading="lazy" />
+        <div class="cap">Env-aware when Docker is configured; graceful fallback otherwise — the PR is always raised.</div>
+      </div>
+      <div class="note"><strong>Modality</strong>Resolved from <code>stack.kind</code> (<code>ui</code>/<code>api</code>), else inferred from an OpenAPI URL or <code>@ui</code>/<code>@api</code> scenario tags.</div>
+    </section>
+
+    <section id="verify">
+      <h2>Verify &amp; heal loop</h2>
+      <p>After the agent edits files, the <strong>Verifier</strong> runs the stack's <code>verifyCommand</code>. On a
+      non-zero exit, the <strong>Healer</strong> builds a narrow "repair only the failing tests" prompt and re-runs
+      verification, up to <code>--max-heal-attempts</code> (default 1). Verify failures don't block the PR — the PR
+      is still raised for human review, with the status recorded as <code>partial</code>.</p>
+      <div class="note ok"><strong>Crash-rescue</strong>If the code agent exits non-zero (e.g. a transport drop at the
+      end of its turn) but <em>verify passed and files changed</em>, the run is rescued to <code>partial</code> with a
+      warning so the commit/PR still proceed — a finished implementation is never silently discarded. A crash with a red
+      verify, or with no changes, still reports <code>failed</code>.</div>
+      <div class="stack"><span class="badge">verifier</span><span class="badge">healer</span><span class="badge grey">verifyCommand · maxHealAttempts</span></div>
+    </section>
+
+    <section id="commit">
+      <h2>Branch &amp; commit</h2>
+      <p><code>commitChangesOnBranch</code> creates a branch named after the issue key (e.g. <code>FINT-1056</code>),
+      stages and commits the agent's changes, and optionally pushes. It is idempotent (re-uses an existing branch)
+      and never throws on a non-zero git exit — failures surface as warnings the CLI reports.</p>
+      <div class="stack"><span class="badge">branchCommit.ts</span><span class="badge grey">git via child_process</span></div>
+    </section>
+
+    <section id="design-file">
+      <h2>Implementing from a design file</h2>
+      <p>The classic path: <code>implement-tests --repo &lt;path&gt; --design out/&lt;KEY&gt;/test-design.json</code>.
+      It loads and validates the on-disk <code>TestDesignPack</code>, then runs the chain. Best when design and
+      implementation happen in the same session.</p>
+      <div class="stack"><span class="badge grey">--design &lt;pack.json&gt;</span></div>
+    </section>
+
+    <section id="xray-sourced">
+      <h2>Implementing from Xray (stateless <code>--issue</code>)</h2>
+      <p>For pipelines where each step is its own job, <code>implement-tests --issue &lt;KEY&gt; --repo &lt;path&gt;</code>
+      reconstructs the design <strong>from Xray</strong> instead of a file: it fetches the story's linked Cucumber
+      tests, pulls each one's Gherkin, parses it back into structured scenarios, diffs against the repo's existing
+      <code>.feature</code> titles, and implements only the <strong>missing</strong> ones. Nothing missing → it exits
+      cleanly. This makes the implement step fully stateless. <code>--require-linked-tests</code> (set by the pipeline
+      implement step) turns "the story has <em>zero</em> linked tests" into a hard failure instead of a quiet green
+      no-op, since design is expected to have run first.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">testFetch (getTests)</span><span class="badge">gherkinParse (inverse render)</span><span class="badge">implementFromXray</span><span class="badge grey">--issue (xor --design)</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/implementation-3.png" alt="diagram" loading="lazy" />
+        <div class="cap">No design artifact required — Xray is the source of truth.</div>
+      </div>
+    </section>
+
+    <section id="vcs">
+      <h2>VcsAdapter — Azure DevOps + GitHub</h2>
+      <p>Pull-request creation and comment I/O live behind a single <code>VcsAdapter</code> seam with two
+      implementations: <code>AzureDevOpsAdapter</code> and <code>GitHubAdapter</code> (github.com + Enterprise).
+      <code>resolveVcsAdapter</code> detects the platform from the repo's <code>origin</code> remote and builds the
+      matching adapter with the right token.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge alt">Azure DevOps REST</span><span class="badge alt">GitHub REST</span><span class="badge">resolveVcsAdapter</span><span class="badge grey">AZURE_DEVOPS_PAT / GITHUB_TOKEN</span></div>
+      <table>
+        <tr><th>Capability</th><th>Azure DevOps</th><th>GitHub</th></tr>
+        <tr><td>Raise PR</td><td>✓</td><td>✓ (handles "already exists")</td></tr>
+        <tr><td>Read comment threads</td><td>✓</td><td>✓ (issue + review comments)</td></tr>
+        <tr><td>Post / reply</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Remote detection</td><td>https / ssh</td><td>github.com + Enterprise</td></tr>
+      </table>
+    </section>
+
+    <section id="push">
+      <h2>Token-based push (unattended-ready)</h2>
+      <p>On a clean CI agent there are no cached git credentials. <code>resolveGitPushAuth</code> inspects the remote
+      and builds an <code>http.extraHeader</code> so the <strong>git push</strong> authenticates with the same token
+      that drives the REST API — GitHub via <code>x-access-token</code>, Azure via the PAT. The secret never lands in
+      the remote URL, and the executed command is logged <strong>redacted</strong>. With no token, it falls back to
+      the host's local git credentials.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">resolveGitPushAuth</span><span class="badge grey">git -c http.extraHeader=… (redacted)</span></div>
+      <div class="note ok"><strong>Why it matters</strong>This is the piece that lets the whole flow run unattended
+      in a pipeline — clone, branch, push, and PR all from a token, with no interactive setup.</div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · Implementation &amp; VCS.</footer>
+</body>
+</html>

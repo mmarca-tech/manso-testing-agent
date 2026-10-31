@@ -11,6 +11,13 @@ import type { NormalizedIssue } from "../../domain/tickets/normalizedIssue.js";
 
 export type TicketSourceName = "jira-rest";
 
+/** Raw bytes of an attachment, downloaded on demand for content analysis. */
+export interface AttachmentContent {
+  data: Uint8Array;
+  /** The server-reported content type, if available. */
+  mimeType?: string;
+}
+
 export interface TicketSource {
   getSourceName(): TicketSourceName;
   getIssue(issueKey: string): Promise<NormalizedIssue>;
@@ -22,4 +29,10 @@ export interface TicketSource {
   getProvenance(): ToolProvenance[];
   getWarnings(): Warning[];
   close(): Promise<void>;
+  /**
+   * Download an attachment's bytes for content analysis (M10e). Optional —
+   * providers that cannot serve attachment content simply omit it, and the
+   * Researcher skips analysis with a warning.
+   */
+  fetchAttachmentContent?(attachment: Attachment): Promise<AttachmentContent | undefined>;
 }

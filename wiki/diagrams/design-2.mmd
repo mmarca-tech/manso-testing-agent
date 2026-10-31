@@ -1,0 +1,11 @@
+flowchart LR
+  CP[(ContextPack)] --> AC[AC extraction]
+  AC --> ACS[acceptanceCriteria]
+  ACS --> GA[Gherkin authoring]
+  STEPS[repo step library] -.reuse.-> GA
+  SKILL[gherkin-authoring skill] -.conventions.-> GA
+  GA --> SC[scenarios]
+  SC --> AU{Coverage Auditor}
+  AU -->|gaps| RETRY[bounded re-design]
+  AU -->|100%| TDP[(TestDesignPack)]
+  TDP --> SINK[Xray sink]

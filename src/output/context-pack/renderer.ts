@@ -19,6 +19,16 @@ export function renderMarkdown(context: ContextPack): string {
 
   lines.push("", "## Description", "", context.description.text || "_No description found._", "");
 
+  if (context.acceptanceCriteria && context.acceptanceCriteria.length > 0) {
+    lines.push("## Acceptance Criteria", "");
+    for (const criterion of context.acceptanceCriteria) {
+      lines.push(
+        `- **${criterion.id}**: ${criterion.text}${criterion.source ? ` _(${criterion.source})_` : ""}`,
+      );
+    }
+    lines.push("");
+  }
+
   lines.push("## Linked Issues", "");
   if (context.ticket.links.length === 0) {
     lines.push("_No linked issues found._", "");
@@ -45,6 +55,23 @@ export function renderMarkdown(context: ContextPack): string {
       ]));
       if (test.description) {
         lines.push("", test.description, "");
+      }
+    }
+  }
+
+  const relatedTickets = context.relatedTickets ?? [];
+  if (relatedTickets.length > 0) {
+    lines.push("## Related Tickets", "");
+    for (const related of relatedTickets) {
+      lines.push(`### ${related.key}: ${related.title}`, "");
+      lines.push(tableRows([
+        ["Type", related.issueType],
+        ["Status", related.status],
+        ["Relationship", related.relationship],
+        ["URL", related.url],
+      ]));
+      if (related.description) {
+        lines.push("", related.description, "");
       }
     }
   }
@@ -97,6 +124,15 @@ export function renderMarkdown(context: ContextPack): string {
       );
     }
     lines.push("");
+    const analyzed = context.attachments.filter((attachment) => attachment.analysis);
+    for (const attachment of analyzed) {
+      lines.push(
+        `### ${attachment.filename}${attachment.analysisSource ? ` (${attachment.analysisSource})` : ""}`,
+        "",
+        attachment.analysis ?? "",
+        "",
+      );
+    }
   }
 
   lines.push("## Confluence Pages", "");
@@ -114,6 +150,18 @@ export function renderMarkdown(context: ContextPack): string {
         lines.push("", page.body, "");
       }
     }
+  }
+
+  if (context.evidenceGraph && (context.evidenceGraph.nodes.length > 0 || context.evidenceGraph.edges.length > 0)) {
+    lines.push("## Evidence Graph", "");
+    lines.push(`Nodes: ${context.evidenceGraph.nodes.length}, Edges: ${context.evidenceGraph.edges.length}`, "");
+    for (const node of context.evidenceGraph.nodes) {
+      lines.push(`- node \`${node.type}:${node.id}\`${node.label ? ` - ${node.label}` : ""}`);
+    }
+    for (const edge of context.evidenceGraph.edges) {
+      lines.push(`- edge \`${edge.from}\` --${edge.type}--> \`${edge.to}\``);
+    }
+    lines.push("");
   }
 
   lines.push("## Warnings", "");

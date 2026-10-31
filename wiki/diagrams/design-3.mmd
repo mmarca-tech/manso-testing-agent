@@ -1,0 +1,10 @@
+flowchart TB
+  TDP[(TestDesignPack)] --> LOOP{for each scenario}
+  LOOP --> DEDUP{title already linked?}
+  DEDUP -->|yes| SKIP[skip]
+  DEDUP -->|no| KIND{scenario kind?}
+  KIND -->|gherkin| CUKE[createTest · Cucumber · gherkin]
+  KIND -->|plain-english| MAN[createTest · Manual · steps]
+  CUKE --> LINK[link to story]
+  MAN --> LINK
+  LINK -.fields.-> XF[extra fields: inherited + override]

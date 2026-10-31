@@ -1,0 +1,4 @@
+flowchart LR
+  PKG["packaged skills/<name>"] --> RES{resolve by name}
+  REPO[".agents/skills/<name> · override"] --> RES
+  RES --> FILT[filter by stack + phase] --> PROMPT[agent prompt]

@@ -1,0 +1,19 @@
+flowchart TB
+  User["User / CI · manso <verb>"] --> CLI
+  subgraph CLI["CLI layer · src/cli"]
+    V["init · check · fetch · skills · design-tests<br/>implement-tests · respond-to-pr · analyse-coverage · eval · audit"]
+  end
+  CLI --> Agents
+  subgraph Agents["Agent layer · src/agents"]
+    R[Researcher] --- TA[Test Architect] --- CA[Coverage Auditor]
+    IM[Implementer] --- VF[Verifier] --- RS[Responder] --- LE[Learning Engine] --- CG[Coverage Gap Analyser]
+  end
+  Agents --> Cap
+  subgraph Cap["Capabilities"]
+    CX["Context · providers, evidence graph, knowledge index"]
+    SK["Skills · SKILL.md loader (+ repo overrides)"]
+    INT["Integrations · Jira · Xray · VCS · LLM · MCP · git"]
+    POL["Policy · budget · audit · redaction · sandbox"]
+  end
+  Cap --> ART["Artifacts · ContextPack · TestDesignPack · ImplementationPack · LearningRecordSet (Zod)"]
+  INT --> EXT[("Jira · Xray · Azure DevOps / GitHub · LLM · OTel")]

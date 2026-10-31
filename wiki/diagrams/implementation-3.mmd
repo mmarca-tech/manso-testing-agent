@@ -1,0 +1,8 @@
+flowchart LR
+  ISS[--issue KEY] --> LINKS[linked Test keys · Jira]
+  LINKS --> GET[Xray getTests · gherkin]
+  GET --> PARSE[parseGherkinScenario]
+  PARSE --> DIFF{title in repo .feature?}
+  DIFF -->|yes| SKIP[skip]
+  DIFF -->|no| KEEP[implement]
+  KEEP --> TDP[(reconstructed TestDesignPack)] --> IMP[Implementer]

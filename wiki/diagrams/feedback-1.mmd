@@ -1,0 +1,8 @@
+flowchart LR
+  PR[(Pull request)] --> READ[read threads]
+  READ --> FIND{unanswered @manso?}
+  FIND -->|no| STOP[done]
+  FIND -->|yes| CLS[classify intent]
+  CLS -->|fix| FX[scoped fix → verify → reply]
+  CLS -->|question| RPL[reply]
+  CLS -->|"@update-knowledge / @update-agent"| LRN[Learning engine]

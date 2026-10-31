@@ -1,3 +1,5 @@
+import { adfToMarkdown } from "./adf.js";
+
 export type UnknownRecord = Record<string, unknown>;
 
 export function isRecord(value: unknown): value is UnknownRecord {
@@ -146,7 +148,7 @@ export function unknownToText(value: unknown): string {
   }
 
   if (value.type === "doc" || value.content !== undefined) {
-    return adfToText(value).trim();
+    return adfToMarkdown(value);
   }
 
   return JSON.stringify(value, null, 2);
@@ -236,40 +238,41 @@ export function buildUrl(base: unknown, path: unknown): string | undefined {
   return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 }
 
-function adfToText(value: unknown): string {
-  const parts: string[] = [];
+/**
+ * Normalize a test/scenario title for duplicate detection: lowercase, collapse
+ * punctuation/unicode-dash/quote/whitespace variants, but PRESERVE comparison
+ * operators (mapped to words) so titles differing only by an operator stay
+ * distinct. Used by the Xray sink's idempotency check, the critique pass, and
+ * the Xray-sourced implement diff — an LLM rarely reproduces a title
+ * byte-for-byte, so exact matching lets reworded duplicates through.
+ */
+export function normalizeTestTitle(title: string): string {
+  return (
+    title
+      .toLowerCase()
+      // Preserve meaning-bearing comparison operators as words FIRST (before the
+      // NFKD + strip below), so titles that differ ONLY by an operator —
+      // "balance = 0" vs "balance != 0", "discount > 50%" vs "< 50%" — don't
+      // collapse to the same form and get dropped as duplicates. Unicode
+      // operator forms are matched here too, before NFKD decomposes them.
+      // Multi-char operators before single-char.
+      .replace(/>=|≥/g, " gte ")
+      .replace(/<=|≤/g, " lte ")
+      .replace(/!=|<>|≠/g, " ne ")
+      .replace(/>/g, " gt ")
+      .replace(/</g, " lt ")
+      .replace(/=/g, " eq ")
+      .replace(/%/g, " pct ")
+      .normalize("NFKD")
+      // Strip remaining noise (punctuation, unicode dashes/quotes) so
+      // reworded-by-punctuation duplicates still collapse.
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
 
-  function visit(current: unknown): void {
-    if (current === undefined || current === null) {
-      return;
-    }
-
-    if (typeof current === "string") {
-      return;
-    }
-
-    if (Array.isArray(current)) {
-      current.forEach(visit);
-      return;
-    }
-
-    if (!isRecord(current)) {
-      return;
-    }
-
-    if (isNonEmptyString(current.text)) {
-      parts.push(current.text);
-    } else if (isRecord(current.attrs) && isNonEmptyString(current.attrs.text)) {
-      parts.push(current.attrs.text);
-    }
-
-    if (current.type === "paragraph" || current.type === "heading" || current.type === "listItem") {
-      parts.push("\n");
-    }
-
-    visit(current.content);
-  }
-
-  visit(value);
-  return parts.join(" ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+/** Round a USD amount to 6 decimal places (shared cost-rounding helper). */
+export function roundUsd(value: number): number {
+  return Math.round(value * 1e6) / 1e6;
 }

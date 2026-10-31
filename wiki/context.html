@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Context Layer — Manso Wiki</title>
+<link rel="stylesheet" href="styles.css" />
+<script type="module" src="wiki.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand"><span class="logo"></span> Manso Wiki</span>
+  <span class="spacer"></span>
+  <a href="index.html">Home</a>
+  <a href="context.html">Context</a>
+  <a href="design.html">Test Design</a>
+  <a href="implementation.html">Implementation</a>
+  <a href="feedback.html">PR &amp; Learning</a>
+  <a href="platform.html">Platform</a>
+  <a href="operations.html">Operations</a>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <h4>Context Layer</h4>
+    <a href="#overview">Overview</a>
+    <a href="#providers">Provider registry &amp; Jira</a>
+    <a href="#contextpack">ContextPack artifact</a>
+    <a href="#adf">ADF → Markdown fidelity</a>
+    <a href="#linked">Linked-ticket expansion</a>
+    <a href="#attachments">Attachments &amp; vision</a>
+    <a href="#evidence">Evidence graph</a>
+    <a href="#knowledge">Knowledge index (BM25)</a>
+    <a href="#agentic">Agentic researcher</a>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <h1>Context Layer</h1>
+      <p class="lead">Everything that turns a raw Jira ticket into a rich, validated <strong>ContextPack</strong>
+      the Test Architect can reason over — without silent truncation.</p>
+    </div>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>The Context Layer is the agent's "reading" half. Behind a single <code>ContextProvider</code> seam it
+      pulls the story, its description, comments, acceptance criteria, linked issues, development links, attachments
+      and Confluence pages, normalizes them, and assembles a <code>ContextPack</code>. Optional passes enrich that
+      pack with an <strong>evidence graph</strong>, a <strong>retrieval index</strong>, and <strong>vision</strong>
+      descriptions of mockups.</p>
+      <div class="stack">
+        <span class="badge">ContextProvider seam</span>
+        <span class="badge">AtlassianRestSource</span>
+        <span class="badge alt">Jira REST v3</span>
+        <span class="badge alt">Jira GraphQL dev-info</span>
+        <span class="badge alt">Confluence REST</span>
+        <span class="badge">Zod ContextPack</span>
+      </div>
+    </section>
+
+    <section id="providers">
+      <h2>Provider registry &amp; Jira fetch</h2>
+      <p>A <code>ProviderRegistry</code> holds the configured context sources and looks them up by name. The first
+      implementation, <code>AtlassianRestSource</code>, wraps Jira + Confluence REST with basic auth and returns a
+      <em>normalized issue</em> (key, title, status, labels, components, links). The registry is the seam that lets
+      non-Jira providers (Rovo MCP, GitHub, …) drop in later without touching the Researcher.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge alt">Jira Cloud REST v3</span><span class="badge">basic-auth client</span><span class="badge grey">env: JIRA_URL / JIRA_USERNAME / JIRA_API_TOKEN</span></div>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>The CLI builds a provider from runtime config (<code>createJiraRestProviderFromRuntime</code>).</li>
+        <li>The Researcher calls <code>provider.getIssue(key)</code>; the source fetches the issue and related data.</li>
+        <li>Normalizers map Jira's shape into Manso's <code>NormalizedIssue</code> types.</li>
+        <li>Provenance and warnings are recorded per call so partial data degrades gracefully.</li>
+      </ol>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/context-1.png" alt="diagram" loading="lazy" />
+        <div class="cap">The provider seam isolates Jira specifics from the Researcher.</div>
+      </div>
+    </section>
+
+    <section id="contextpack">
+      <h2>ContextPack artifact</h2>
+      <p>The <code>ContextPack</code> is the durable, Zod-validated output of the Researcher: ticket facts,
+      description (with format), comments, acceptance criteria, linked issues, Xray test cases, development links,
+      Confluence pages, an optional evidence graph, retrieval citations, plus <strong>provenance</strong> and
+      <strong>warnings</strong>. It is written to <code>out/&lt;KEY&gt;/context.json</code> and <code>.md</code>.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">Zod schema</span><span class="badge grey">writer + markdown renderer</span></div>
+      <p>Because every downstream stage consumes this one schema, the pack is the contract: if it validates, the
+      Test Architect can rely on its shape. New fields are added as <code>.optional()</code> so the pack can be
+      enriched incrementally without breaking older writers.</p>
+    </section>
+
+    <section id="adf">
+      <h2>ADF → Markdown fidelity</h2>
+      <p>Jira stores rich text as <strong>Atlassian Document Format</strong> (ADF). Naively flattening it loses
+      tables, panels, code blocks, and inline links — exactly the structure that encodes requirements. Manso's
+      ADF converter preserves tables, panels, lists, and code, and extracts inline links so referenced material can
+      be followed.</p>
+      <h4 class="sub">How it works</h4>
+      <p>A recursive walker maps each ADF node type to Markdown, keeping table rows/cells and panel callouts intact,
+      and collecting <code>inlineCard</code>/link nodes into a list of references the linked-ticket and Confluence
+      passes can resolve.</p>
+      <div class="stack"><span class="badge">adf.ts walker</span><span class="badge grey">tables · panels · code · links</span></div>
+      <div class="note ok"><strong>Comments carry the spec</strong>A ticket's richest detail is often a
+      <em>comment</em> — a QA scenario table, dev clarifications, edge-case notes. Comments are kept up to a generous
+      per-comment cap (8,000 chars) with an overall budget, so a long scenario table reaches the Test Architect intact
+      instead of being clipped.</div>
+    </section>
+
+    <section id="linked">
+      <h2>Linked-ticket expansion (bounded)</h2>
+      <p>A story rarely stands alone — epics, sub-tasks, and "relates to" links carry essential context. Manso
+      expands linked issues to a <strong>bounded depth</strong> (configurable via <code>context.linkedTicketDepth</code>),
+      pulling their titles, descriptions and status so the design reflects the whole picture without runaway fan-out.</p>
+      <div class="stack"><span class="badge grey">linkedTicketDepth (default 1)</span><span class="badge alt">Jira issue links</span></div>
+      <div class="note"><strong>Why bounded</strong>Depth is capped so a densely-linked epic can't trigger an
+      unbounded crawl; beyond the limit, links are recorded as references rather than fully hydrated.</div>
+    </section>
+
+    <section id="attachments">
+      <h2>Attachments &amp; vision understanding</h2>
+      <p>Tickets attach mockups, screenshots, and PDFs. Manso downloads attachments through a credential-scoped
+      seam (the token is only attached for same-origin Jira hosts, never to a redirected URL), extracts text from
+      documents, and — when an LLM is configured — sends images to a <strong>vision</strong> model to describe
+      mockups as evidence the Test Architect can cite.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">getBinary (same-origin auth)</span><span class="badge alt">multimodal LLM</span><span class="badge grey">text extraction</span></div>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>List attachments from the issue; download bytes via the scoped binary fetch (with <code>Accept: */*</code>, so Jira serves the file's real content type — e.g. <code>image/png</code> — rather than 406-ing a narrow Accept).</li>
+        <li>Text-bearing files are parsed to text; images are base64-encoded.</li>
+        <li>Images go to the vision model with a description prompt; the result becomes a piece of evidence (recorded as <code>analysisSource: "vision"</code> on the attachment).</li>
+        <li>Failures warn and skip — a broken attachment never fails the run.</li>
+      </ol>
+    </section>
+
+    <section id="evidence">
+      <h2>Evidence graph</h2>
+      <p>The evidence graph assembles the pack's pieces — description paragraphs, comments, ACs, linked tickets,
+      attachment descriptions — into a graph of <strong>nodes</strong> the Test Architect and Coverage Auditor can
+      reference by id. Each scenario records the <code>sourceEvidence</code> it was derived from, giving full
+      traceability from a test back to the requirement that justified it.</p>
+      <div class="stack"><span class="badge">evidenceGraph.ts</span><span class="badge grey">node ids · provenance</span></div>
+    </section>
+
+    <section id="knowledge">
+      <h2>Knowledge index (BM25 retrieval)</h2>
+      <p>For large contexts, feeding everything to the LLM is wasteful and lossy. Manso builds a lightweight,
+      in-memory <strong>BM25</strong> index over the context chunks so the agentic researcher can <em>retrieve</em>
+      the most relevant passages for a query instead of dumping the whole pack into the prompt.</p>
+      <h4 class="sub">Tech stack</h4>
+      <div class="stack"><span class="badge">knowledgeIndex.ts</span><span class="badge grey">BM25 (chunk · tokenize · score)</span></div>
+      <div class="diagram">
+        <img class="mermaid-img" src="diagrams/context-2.png" alt="diagram" loading="lazy" />
+        <div class="cap">Retrieval keeps prompts focused and grounded.</div>
+      </div>
+    </section>
+
+    <section id="agentic">
+      <h2>Agentic researcher (tool-using retrieval)</h2>
+      <p>With <code>--deep</code>, the Researcher becomes <strong>tool-using</strong>: instead of a single pass, the
+      LLM drives retrieval over the knowledge index and decides which linked tickets to expand, iterating until it
+      has enough grounded evidence. This trades cost for depth on complex stories, while the default flow stays
+      cheap and deterministic.</p>
+      <h4 class="sub">How it works</h4>
+      <ol class="steps">
+        <li>Build the knowledge index from the base ContextPack.</li>
+        <li>Expose retrieval + link-expansion as tools to the LLM.</li>
+        <li>The model queries, reads passages, expands tickets, and stops when satisfied.</li>
+        <li>Retrieved citations are recorded on the pack for traceability.</li>
+      </ol>
+      <div class="stack"><span class="badge">agenticRetrieval.ts</span><span class="badge alt">LLM tool loop</span><span class="badge grey">--deep (opt-in)</span></div>
+    </section>
+  </main>
+</div>
+
+<footer>Manso feature wiki · Context Layer.</footer>
+</body>
+</html>

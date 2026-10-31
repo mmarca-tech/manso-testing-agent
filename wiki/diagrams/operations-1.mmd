@@ -1,0 +1,6 @@
+flowchart LR
+  subgraph build["builder · node:20"]
+    A[npm ci] --> B[npm run build → dist] --> C[npm ci --omit=dev]
+  end
+  build --> RT["runtime · Playwright base + git"]
+  RT --> ENTRY["node dist/cli/main.js <verb>"]

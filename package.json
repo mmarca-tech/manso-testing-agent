@@ -1,11 +1,15 @@
 {
-  "name": "manso-testing-agent",
-  "version": "2.5.1",
-  "description": "Bounded Jira, PR, Confluence, and Xray test workflow CLI and TypeScript library.",
+  "name": "@mmarca-tech/manso-testing-agent",
+  "version": "0.1.0",
+  "description": "Manso - an end-to-end AI testing agent: context-aware test design and multi-stack test automation.",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mmarca-tech/manso-testing-agent.git"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,42 +17,39 @@
     },
     "./package.json": "./package.json"
   },
-  "publishConfig": {
-    "registry": ""
-  },
   "bin": {
-    "review-pull-request": "./dist/reviewPullRequestCli.js",
-    "generate-release-notes": "./dist/generateReleaseNotesCli.js",
-    "generate-xray-tests": "./dist/xrayTestGenerationCli.js",
-    "implement-xray-tests": "./dist/xrayTestImplementationCli.js"
+    "manso": "./dist/cli/main.js"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
+    "CHANGELOG.md",
     ".env.example",
-    "scripts/run-ticket-workflow.ps1"
+    "docs/MEMORY-CABIN.md"
   ],
   "keywords": [
-    "jira",
-    "xray",
+    "testing",
     "qa",
     "test-generation",
-    "azure-devops",
-    "confluence"
+    "bdd",
+    "gherkin",
+    "jira",
+    "xray"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
-    "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",
     "pack:dry-run": "npm pack --dry-run",
-    "publish:azure": "npm publish --userconfig .azure/.npmrc",
-    "publish-confluence-docs": "tsx scripts/publish-confluence-docs.ts",
+    "release:plan": "node scripts/release.mjs plan",
+    "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "review-pull-request": "tsx src/reviewPullRequestCli.ts",
-    "generate-release-notes": "tsx src/generateReleaseNotesCli.ts",
-    "generate-xray-tests": "tsx src/xrayTestGenerationCli.ts",
-    "implement-xray-tests": "tsx src/xrayTestImplementationCli.ts"
+    "docker:build": "docker build -t manso:local .",
+    "manso": "tsx src/cli/main.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.138",
@@ -56,20 +57,19 @@
     "@arizeai/openinference-instrumentation-anthropic": "^0.1.10",
     "@arizeai/openinference-instrumentation-openai": "^4.1.0",
     "@arizeai/phoenix-otel": "^1.0.1",
-    "@openai/codex": "^0.130.0",
     "@openai/codex-sdk": "^0.130.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.205.0",
     "@opentelemetry/resources": "^2.7.1",
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@opentelemetry/sdk-trace-node": "^2.7.1",
+    "diff": "^9.0.0",
     "dotenv": "^17.4.2",
     "openai": "^6.37.0",
     "zod": "^4.4.2"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "marked": "^18.0.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.5"

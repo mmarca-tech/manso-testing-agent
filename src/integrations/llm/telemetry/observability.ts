@@ -27,6 +27,7 @@ import type {
   OpenTelemetryProvider,
   PhoenixTelemetryConfig,
 } from "../types.js";
+import { isTelemetryActive, markTelemetryActive } from "./state.js";
 
 export type SpanAttributeValue = string | number | boolean;
 
@@ -132,6 +133,7 @@ export function initializeTelemetry(config: ObservabilityTelemetryConfig | undef
   registeredProvider = config.provider;
   registerLlmInstrumentations(tracerProvider);
   instrumentationRegistered = true;
+  markTelemetryActive();
 }
 
 export function buildOtlpTraceExporterConfig(config: ObservabilityTelemetryConfig): OtlpTraceExporterConfig {
@@ -239,6 +241,28 @@ export function userSpanAttributes(userId: string): Record<string, SpanAttribute
 
 export function setActiveSpanAttributes(attributes: Record<string, SpanAttributeValue | undefined>): void {
   trace.getActiveSpan()?.setAttributes(compactSpanAttributes(attributes));
+}
+
+/**
+ * Run `fn` with a telemetry session attached so every span created inside it
+ * (LLM `task.*` spans plus OpenInference SDK child spans) is tagged with
+ * `session.id` / `langfuse.session.id`. This is what groups all LLM calls of a
+ * single run under one session in the Langfuse/Phoenix UI.
+ *
+ * No-op (just runs `fn`) when telemetry was never activated or no session id is
+ * available, so callers can wrap unconditionally.
+ */
+export function withTelemetrySession<T>(
+  sessionId: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const normalized = normalizeSessionId(sessionId);
+  if (!normalized || !isTelemetryActive()) {
+    return fn();
+  }
+
+  const tracingContext = withBaggageAttributes(context.active(), sessionSpanAttributes(normalized));
+  return context.with(tracingContext, fn);
 }
 
 function registerPhoenixTelemetry(config: PhoenixTelemetryConfig): RegisteredTracerProvider {
@@ -388,6 +412,10 @@ class InstrumentedLlmTextClient implements LlmTextClient {
     this.provider = client.provider;
     this.model = client.model;
     this.toolName = client.toolName;
+  }
+
+  getAccumulatedUsage() {
+    return this.client.getAccumulatedUsage?.();
   }
 
   async generateText(request: LlmTextGenerationRequest): Promise<string> {

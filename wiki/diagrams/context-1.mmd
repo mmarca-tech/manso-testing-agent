@@ -1,0 +1,6 @@
+flowchart LR
+  CLI --> PR[ProviderRegistry] --> SRC[AtlassianRestSource]
+  SRC -->|REST v3| JIRA[(Jira Cloud)]
+  SRC -->|REST| CONF[(Confluence)]
+  SRC --> NORM[normalizers] --> NI[NormalizedIssue]
+  NI --> RES[Researcher]
